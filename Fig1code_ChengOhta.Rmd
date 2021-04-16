@@ -1,0 +1,495 @@
+---
+title: "Fig1code"
+output: html_document
+---
+
+Setup
+```{r Setup, include=F} 
+library(edgeR)
+library(ggplot2)
+library(pheatmap)
+library(matrixStats)
+library(forcats)
+library(RColorBrewer)
+library(stats)
+library(biomaRt)
+library(Vennerable)
+library(reshape2)
+library("factoextra")
+library("cluster")
+library("tidyverse")
+library("gridExtra")
+library(clipr)
+library(ChIPpeakAnno)
+```
+
+Format dataframe
+```{r}
+counts_all <- read.table("/Users/qjcheng/Documents/Work/Data/NFkB Dynamics Epigenetics/GEO submission/WT_H3K4me1-CHIP_counts.txt")
+```
+
+Set up EdgeR for differential peak analysis
+```{r} 
+y <- DGEList(counts=counts_all[,5:ncol(counts_all)], genes = counts_all[,1:4], group=rep(c("CpG", "LPS", "None", "Pam3CSK", "pIC", "TNF"), 2))
+
+y <- calcNormFactors(y)
+y$samples 
+
+design <- model.matrix(~0+group, data=y$samples)
+colnames(design) <- levels(y$samples$group)
+design
+
+y <- estimateDisp(y, design, robust=TRUE)
+sqrt(y$common.dispersion)  
+
+plotBCV(y)
+
+fit <- glmQLFit(y,design)
+
+```
+
+Differential peak analysis
+```{r}
+# Use EdgeR to compare each stimulus with unstimulated
+fdr <- 0.05
+
+Compare_CpG <- glmQLFTest(fit, contrast = c(1,0,-1,0,0,0))
+DiffPeaks_CpG <- decideTestsDGE(Compare_CpG, adjust.method = "fdr", p.value = fdr)
+summary(DiffPeaks_CpG == 1)
+
+Compare_LPS <- glmQLFTest(fit, contrast = c(0,1,-1,0,0,0))
+DiffPeaks_LPS <- decideTestsDGE(Compare_LPS, adjust.method = "fdr", p.value = fdr)
+summary(DiffPeaks_LPS == 1)
+
+Compare_Pam3CSK <- glmQLFTest(fit, contrast = c(0,0,-1,1,0,0))
+DiffPeaks_Pam3CSK <- decideTestsDGE(Compare_Pam3CSK, adjust.method = "fdr", p.value = fdr)
+summary(DiffPeaks_Pam3CSK == 1)
+
+Compare_pIC <- glmQLFTest(fit, contrast = c(0,0,-1,0,1,0))
+DiffPeaks_pIC <- decideTestsDGE(Compare_pIC, adjust.method = "fdr", p.value = fdr)
+summary(DiffPeaks_pIC == 1)
+
+Compare_TNF <- glmQLFTest(fit, contrast = c(0,0,-1,0,0,1))
+DiffPeaks_TNF <- decideTestsDGE(Compare_TNF, adjust.method = "fdr", p.value = fdr)
+summary(DiffPeaks_TNF == 1)
+```
+
+Venn diagram of differential peaks per stimulus
+```{r, include = F}
+CpG <- rownames(y[DiffPeaks_CpG==1,])
+TNF <- rownames(y[DiffPeaks_TNF==1,])
+LPS <- rownames(y[DiffPeaks_LPS==1,])
+pIC <- rownames(y[DiffPeaks_pIC==1,])
+Pam3CSK <- rownames(y[DiffPeaks_Pam3CSK==1,])
+
+venn <- list(CpG, TNF, LPS, pIC, Pam3CSK)
+names(venn) <- c("CpG", "TNF", "LPS", "pIC", "Pam3CSK")
+venn <- Venn(venn)
+#plot(venn, doWeights = T, show = list(Faces = T), doEuler = T)
+```
+ 
+Union of peaks into new dataframe
+```{r}
+DiffPeaks_all <- DiffPeaks_CpG==1 | DiffPeaks_LPS==1 | DiffPeaks_Pam3CSK==1 | DiffPeaks_pIC==1 | DiffPeaks_TNF==1
+summary(DiffPeaks_all) #6814 peaks
+
+cpm <- cpm(y)
+DiffPeaks_cpm <- cpm[DiffPeaks_all,]
+DiffPeaks_all <- y[DiffPeaks_all,]
+
+#save(DiffPeaks_cpm, file="DiffPeaks_cpm.Rdata")
+#save(DiffPeaks_all, file="DiffPeaks_all.Rdata")
+```
+
+ 
+scale across row (z-score of log2 normalized counts) for PCA and heat map
+```{r}
+scaled <- t(scale(t(log2(DiffPeaks_cpm+1))))
+```
+
+PCA
+```{r}
+# PCA 
+pca <- prcomp(t(scaled), scale = FALSE, center = T)
+screeplot(pca)
+
+df_out <- as.data.frame(pca$x)
+df_out$sample <- colnames(scaled)  
+df_out$replicate <- rep(c("Rep1", "Rep2"),each=6)
+df_out$stimulus <- substr(colnames(scaled),1,nchar(colnames(scaled))-2)
+head(df_out)
+
+#Calculate percentages
+percentage <- round(pca$sdev^2 / sum(pca$sdev^2) * 100, 2)
+percentage <- paste( colnames(pca$x), "(", paste( as.character(percentage), "%", ")", sep="") )
+percentage
+
+ggplot(df_out, aes(x=PC1,y=PC2, col = sample)) + geom_text(aes(label=sample, color = stimulus)) + xlab(percentage[1]) + ylab(percentage[2]) + theme(legend.position = "none")
+```
+
+
+Heat map, 2 clusters
+```{r heat map}
+set.seed(123)
+k2 <- kmeans(scaled, 2, nstart = 25)
+
+# order data by cluster
+ord_data <- scaled[order(k2$cluster, decreasing = F), ]
+
+# make clustering annotation
+annot_r <- data.frame(row.names = rownames(scaled), cluster = factor(k2$cluster))
+table(k2$cluster) 
+num <- table(k2$cluster)
+
+# make heatmap
+pheatmap(ord_data, cluster_rows = F, cluster_cols = T, show_rownames = F, gaps_row = c(num[1]), colorRampPalette(c("blue3", "white", "red3"))(100))
+ 
+```
+
+Make heat map of averages of two replicates
+```{r averages heat map}
+# make dataframe
+DiffPeaks_mean <- data.frame(None = rowMeans(DiffPeaks_cpm[,c(3,9)]), 
+                   TNF = rowMeans(DiffPeaks_cpm[,c(6,12)]),
+                   Pam3CSK = rowMeans(DiffPeaks_cpm[,c(4,10)]), 
+                   CpG = rowMeans(DiffPeaks_cpm[,c(1,7)]),
+                   LPS = rowMeans(DiffPeaks_cpm[,c(2,8)]),
+                   pIC = rowMeans(DiffPeaks_cpm[,c(5,11)]))
+
+# scale
+scaled_mean <- t(scale(t(log2(DiffPeaks_mean+1))))
+
+# cluster
+set.seed(123)
+k2 <- kmeans(scaled_mean, 2, nstart = 25)
+
+# order data by cluster
+ord_data <- scaled_mean[order(k2$cluster, decreasing = F), ]
+
+# make clustering annotation
+annot_r <- data.frame(row.names = rownames(scaled_mean), cluster = factor(k2$cluster))
+table(k2$cluster) 
+num <- table(k2$cluster)
+
+# make heatmap
+pheatmap(ord_data, cluster_rows = F, cluster_cols = F, show_rownames = F, gaps_row = c(num[1]), colorRampPalette(c("blue3", "white", "red3"))(100))
+```
+ 
+Create dataframe of inducible peaks with counts normalized for peak width
+```{r}
+# divide cpm by peak width and multiply by median peak width
+
+summary(DiffPeaks_all$genes$Width) #median = 2240
+normalized_cpm <- as.data.frame(2240 * DiffPeaks_mean / DiffPeaks_all$genes$Width)
+
+summary(normalized_cpm)
+
+# convert to fold-change
+fold_change <- data.frame(row.names = rownames(normalized_cpm),
+                          TNF = (normalized_cpm$TNF +1) / (normalized_cpm$None + 1),
+                          Pam3CSK = (normalized_cpm$Pam3CSK +1) / (normalized_cpm$None + 1),
+                          CpG = (normalized_cpm$CpG +1) / (normalized_cpm$None + 1),
+                          LPS = (normalized_cpm$LPS +1) / (normalized_cpm$None + 1),
+                          pIC = (normalized_cpm$pIC +1) / (normalized_cpm$None + 1))
+```
+
+Filter for effect size using peak-width-normalized counts
+```{r}
+# use 2-fold induction as threshold
+keep <- rowMaxs(as.matrix(fold_change)) >= 2
+summary(keep)
+
+# this eliminates 2836 peaks, leaving 3978
+# make new dataframe of cpm
+final <- DiffPeaks_all[keep,]
+final_mean <- DiffPeaks_mean[keep,]
+
+#save(final_mean, file = "final_mean.Rdata")
+```
+
+Heat map of the filtered peaks (mean)
+```{r}
+# scale
+scaled_mean <- t(scale(t(log2(final_mean+1))))
+
+# cluster
+set.seed(123)
+k2 <- kmeans(scaled_mean, 2, nstart = 25)
+
+# order data by cluster
+ord_data <- scaled_mean[order(k2$cluster, decreasing = F), ]
+
+# make clustering annotation
+annot_r <- data.frame(row.names = rownames(scaled_mean), cluster = factor(k2$cluster))
+table(k2$cluster) 
+num <- table(k2$cluster)
+
+# make heatmap
+pheatmap(ord_data, cluster_rows = F, cluster_cols = F, show_rownames = F, gaps_row = c(num[1]), colorRampPalette(c("blue3", "white", "red3"))(100))
+
+pheatmap(ord_data, cluster_rows = F, cluster_cols = F, show_rownames = F, gaps_row = c(num[1]), color = c(rev(colorRampPalette(c("white", "navy", "midnightblue"), bias = 0.45)(32)), colorRampPalette(c("white", "firebrick3", "firebrick"), bias = 0.45)(32)))
+```
+Make heat map of FC of peak-width-normalized counts
+```{r}
+# select peaks out of fold-change dataframe
+fold_change_HM <- fold_change[keep,]
+
+# max it out at FC=10
+temp <- apply(fold_change_HM, 2, function(x) ifelse(x>10, 10, x))
+
+# order data by cluster
+ord_data <- temp[order(k2$cluster, decreasing = F), ]
+
+# make clustering annotation
+annot_r <- data.frame(row.names = rownames(scaled_mean), cluster = factor(k2$cluster))
+table(k2$cluster) 
+num <- table(k2$cluster)
+
+# make heatmap
+pheatmap(ord_data, cluster_rows = F, cluster_cols = F, show_rownames = F, gaps_row = c(num[1]), colorRampPalette(c("white", "midnightblue"))(100))
+```
+
+
+Export clusters as bed files
+```{r}
+ISREcluster <- final$genes[k2$cluster==1,]
+NFkBcluster <- final$genes[k2$cluster==2,]
+NFkBcluster.mean <- final_mean[k2$cluster==2,]
+ISREcluster.mean <- final_mean[k2$cluster==1,]
+
+#save(NFkBcluster.mean, file = "NFkBcluster.mean.Rdata")
+#save(NFkBcluster, file = "NFkBcluster.Rdata")
+#write_delim(ISREcluster, "ISREcluster.bed", delim = '\t')
+#write_delim(NFkBcluster, "NFkBcluster.bed", delim = '\t')
+#write.csv(NFkBcluster.mean, "NFkBcluster.csv")
+#write.csv(ISREcluster.mean, "ISREcluster.csv")
+
+# also export all peaks for background for HOMER
+#write_delim(y$genes, "AllPeaks.bed", delim = '\t')
+```
+
+Find overlaps with RelA ChIP-seq data
+bedtools intersect -a NFkBcluster.bed -b RelA_peaks_all.bed -wa > temp.bed
+uniq temp.bed > NFkBclust-filtered.bed
+
+# Make box plots for NFkB enhancers
+```{r}
+NFkBcluster.filtered <- read.table("/Users/qjcheng/Documents/Work/Data/NFkB Dynamics Epigenetics/WT-stimulus-specific-enhancers/NFkBclust-filtered.bed")
+NFkBcluster.filtered <- paste(NFkBcluster.filtered$V1,":",NFkBcluster.filtered$V2,"-",NFkBcluster.filtered$V3, sep="")
+NFkBcluster.filtered <- final_mean[rownames(final_mean) %in% NFkBcluster.filtered,]
+
+# check that heat map looks right
+pheatmap(NFkBcluster.filtered, scale = "row", show_rownames = F, cluster_cols = F, cluster_rows = F)
+
+# make ggplot-friendly dataframe
+ggWT <- data.frame(locations = rep(rownames(NFkBcluster.filtered), 6),
+                   stimulus = rep(c("None", "TNF", "Pam3CSK", "CpG", "LPS", "pIC"), each = nrow(NFkBcluster.filtered)), 
+                   cpm = c(NFkBcluster.filtered$None, NFkBcluster.filtered$TNF, NFkBcluster.filtered$Pam3CSK, NFkBcluster.filtered$CpG, NFkBcluster.filtered$LPS, NFkBcluster.filtered$pIC))
+
+ggWT$logcpm <- log2(ggWT$cpm + 1)
+NFkBclust.filtered.FC <- fold_change[rownames(fold_change) %in% rownames(NFkBcluster.filtered),]
+ggWT$FC <- c(rep(1,nrow(NFkBcluster.filtered)), NFkBclust.filtered.FC$TNF, NFkBclust.filtered.FC$Pam3CSK, NFkBclust.filtered.FC$CpG, NFkBclust.filtered.FC$LPS, NFkBclust.filtered.FC$pIC)
+ggWT$stimulus <- factor(ggWT$stimulus, levels = c("None", "TNF", "Pam3CSK", "CpG", "LPS", "pIC"), order = T)
+
+ggplot(ggWT, aes(y=logcpm, x=stimulus)) + geom_violin(aes(fill = stimulus), trim = T) + geom_boxplot(width = 0.2) + scale_fill_manual(values = c(rep("gray70",6))) + theme(legend.position="none") + labs(x = NULL, y = "log2(cpm)")
+
+ggplot(ggWT[!ggWT$stimulus=="None",], aes(y=log2(FC), x=stimulus)) + geom_violin(aes(fill = stimulus), trim = T) + geom_boxplot(width = 0.2) + scale_fill_manual(values = c(rep("gray50",5))) + theme(legend.position="none") + theme_bw() + labs(x = NULL, y = "log2(fold-change)") 
+
+ggplot(ggWT[!ggWT$stimulus=="None",], aes(y=log2(FC), x=stimulus)) + geom_violin(aes(fill = stimulus), trim = T) + geom_boxplot(width = 0.2) + scale_fill_brewer(palette = "Dark2") + theme(legend.position="none") + labs(x = NULL, y = "log2(fold-change)")
+```
+
+
+# Heat map of t-test matrix Fig 1d 
+Make matrix of t-test p-values
+http://www.sthda.com/english/wiki/matrix-of-student-t-test
+```{r}
+library(reshape)
+# matrix of t-test
+# mat : data.frame or matrix
+# ... : further arguments to pass to the t.test function
+multi.ttest <- function(mat, ...) {
+  mat <- as.matrix(mat)
+  n <- ncol(mat)
+  p.mat<- matrix(NA, n, n)
+  diag(p.mat) <- 1
+  for (i in 1:(n - 1)) {
+    for (j in (i + 1):n) {
+      test <- t.test(mat[, i], mat[, j], ...)
+      p.mat[i, j] <- p.mat[j, i] <- test$p.value
+    }
+  }
+  colnames(p.mat) <- rownames(p.mat) <- colnames(mat)
+  signif(p.mat,4)
+}
+
+p.mat <- multi.ttest(log2(NFkBclust.filtered.FC))
+p.mat <- -log10(p.mat)
+p.mat
+
+```
+ 
+Plot
+```{r}
+# Trim off half 
+get_upper_tri <- function(cormat){
+    cormat[lower.tri(cormat)]<- NA
+    return(cormat)
+  }
+
+upper_tri <- get_upper_tri(p.mat)
+upper_tri
+
+plot <- melt(upper_tri, rm.na = T) # the rm.na doesn't seem to work
+plot <- plot[!is.na(plot$value),]
+
+plot$X1 <- factor(plot$X1, levels = c("TNF", "Pam3CSK", "CpG", "LPS", "pIC"), order = T)
+plot$X2 <- factor(plot$X2, levels = c("TNF", "Pam3CSK", "CpG", "LPS", "pIC"), order = T)
+
+# Heatmap
+ggplot(data = plot, aes(x=X2, y=X1, fill = value)) + 
+  geom_tile(color = "white") + 
+  scale_fill_gradient(high = "#08519c", low = "#eff3ff", name="-log(p-value)") +
+  theme(panel.grid.major = element_blank(),
+  panel.border = element_blank(),
+  panel.background = element_blank(),
+  axis.ticks = element_blank(),
+  axis.text.x = element_text(angle = 45, vjust = 1, size = 10, hjust = 1), 
+  axis.text.y = element_text(size = 10)) + 
+  coord_fixed() + 
+  labs(x=NULL, y=NULL)
+```
+
+
+# Bring in Irf3-/-Ifnar-/- (dKO) data
+Load and format dKO count table
+```{r load and format}
+setwd("/Users/qjcheng/Documents/Work/Data/NFkB Dynamics Epigenetics/2019_irf3ifnar_H3K4me1")
+x <- read.delim("counts.tab", header = T)
+colnames(x)
+
+# re-order columns and remove input column
+x <- x[,c(1,2,3,10,9,7,4,6,8)]
+# rename columns
+colnames(x) <- c("chr", "start", "end", "None", "TNF", "Pam3CSK", "CpG", "LPS", "pIC")
+
+##Re-format locations into one column
+z <- cbind(location=paste(x[,1],":",x[,2], 
+                          "-",x[,3],sep=""),x[,c(4:ncol(x))])
+rownames(z) <- z[,1]
+z[,1] <- NULL
+
+rownames(x) <- rownames(z)
+```
+
+Remove blacklisted locations
+```{r blacklist}
+# mm10 blacklist downloaded from http://mitra.stanford.edu/kundaje/akundaje/release/blacklists/mm10-mouse/mm10.blacklist.bed.gz 
+
+blacklist <- read.table("/Users/qjcheng/Documents/Work/Code/mm10.blacklist.bed")
+colnames(blacklist) <- c("chr", "start", "end")
+locations <- x[,1:3]
+
+locations <- toGRanges(locations, format="BED", header=FALSE) 
+blacklist <- toGRanges(blacklist, format="BED", header=FALSE) 
+
+overlap <- findOverlapsOfPeaks(blacklist, locations) 
+
+remove <- overlap$overlappingPeaks$`blacklist///locations`
+# need to shift start sites by 1 base
+remove[,9] <- remove[,9]-1
+remove <- paste(remove[,8],":",remove[,9],"-",remove[,10],sep="")
+remove <- unique(remove)
+keep <- !(rownames(y) %in% remove)
+z <- z[keep,]
+x <- x[keep,]
+```
+
+Convert to cpm and select the induced peaks defined in WT conditions ()
+```{r induced peaks}
+barplot(colSums(z))
+# this is consistent with what I saw in the QC qPCRs prior to sequencing. TNF and pIC samples had higher background with qPCR amplification in gene desert regions that was ~5-fold higher than in the other samples
+# so the result is that there are fewer counts in the regions of interest
+
+cpm <- cpm(z)
+cpm.diff <- as.data.frame(cpm[rownames(cpm) %in% rownames(final_mean),])
+
+# cpm.diff has one fewer row than final_mean, was probably a blacklisted region. so drop it. 
+
+final_mean <- final_mean[rownames(final_mean) %in% rownames(cpm.diff),]
+```
+
+PCA 
+```{r PCA}
+pca <- prcomp(t(log2(cpm.diff+1)), scale = TRUE, center = T)
+screeplot(pca)
+
+df_out <- as.data.frame(pca$x)
+df_out$sample <- colnames(cpm.diff)  
+head(df_out)
+
+#Calculate percentages
+percentage <- round(pca$sdev^2 / sum(pca$sdev^2) * 100, 2)
+percentage <- paste( colnames(pca$x), "(", paste( as.character(percentage), "%", ")", sep="") )
+percentage
+
+ggplot(df_out, aes(x=PC1,y=PC2, col = sample)) + geom_text(aes(label=sample)) + xlab(percentage[1]) + ylab(percentage[2])
+```
+ 
+Make data frame of WT (avg of 2 reps) + irf3/ifnar dKO
+```{r}
+colnames(final_mean) <- paste("WT", colnames(final_mean), sep = ".")
+colnames(cpm.diff) <- paste("KO",colnames(cpm.diff), sep = ".")
+
+final <- cbind(final_mean, cpm.diff)
+```
+
+PCA of all data
+```{r PCA all}
+pca <- prcomp(t(log2(final+1)), scale = TRUE, center = T)
+screeplot(pca)
+
+df_out <- as.data.frame(pca$x)
+df_out$sample <- colnames(final)  
+df_out$genotype <- c(rep("WT", 6), rep("KO",6))
+df_out$stimulus <- substr(colnames(final),4,nchar(colnames(final)))
+head(df_out)
+
+#Calculate percentages
+percentage <- round(pca$sdev^2 / sum(pca$sdev^2) * 100, 2)
+percentage <- paste( colnames(pca$x), "(", paste( as.character(percentage), "%", ")", sep="") )
+percentage
+
+ggplot(df_out, aes(x=PC1,y=PC2, col = sample)) + geom_text(aes(label=stimulus, color = genotype)) + xlab(percentage[1]) + ylab(percentage[2])
+```
+
+Heat map using k2 clustering of only WT data
+```{r}
+# scale WT data
+scaled_mean <- t(scale(t(log2(final_mean+1))))
+
+# cluster
+set.seed(123)
+k2 <- kmeans(scaled_mean, 2, nstart = 25)
+
+# order data by cluster
+ord_data <- final[order(k2$cluster, decreasing = F), ]
+table(k2$cluster) 
+num <- table(k2$cluster)
+
+# make heatmap
+pheatmap(ord_data, scale = "row", cluster_rows = F, cluster_cols = F, show_rownames = F, gaps_row = c(num[1]), gaps_col = 6, colorRampPalette(c("blue3", "white", "red3"))(100))
+
+pheatmap(ord_data, scale = "row", cluster_rows = F, cluster_cols = F, show_rownames = F, gaps_row = c(num[1]), gaps_col = 6, color = c(rev(colorRampPalette(c("white", "navy", "midnightblue"), bias = 0.45)(32)), colorRampPalette(c("white", "firebrick3", "firebrick"), bias = 0.45)(32)))
+
+```
+
+save key data
+```{r}
+#save(DiffPeaks_filtered_cpm, file = "DiffPeaks_filtered_cpm.Rdata")
+#save(DiffPeaks_mean, file = "DiffPeaks_mean.Rdata")
+```
+
+
+```{r}
+sessionInfo()
+```

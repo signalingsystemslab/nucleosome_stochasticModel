@@ -1,0 +1,723 @@
+---
+title: "ChengOhta_Fig3"
+output: html_notebook
+---
+
+# Prep 
+
+Libraries
+
+```{r include=FALSE}
+flag.primary <- F
+flag.primary.raw <- F
+```
+
+
+```{r include=FALSE}
+library(edgeR)
+library(csaw)
+library(limma)
+
+library(biomaRt)
+library(ChIPpeakAnno)
+library(EnsDb.Mmusculus.v79)
+library(org.Mm.eg.db)
+
+library(pheatmap)
+library(corrplot)
+library(psych)
+
+library(genefilter)
+library(cluster)
+library(fastcluster)
+
+library(rtracklayer)
+
+library(tidyverse)
+library(broom)
+```
+
+Funtions
+
+```{r include=FALSE}
+ltpm <- function(lrpkm) return(t(t(lrpkm) / colSums(lrpkm) * 1000000))
+```
+
+Common
+
+```{r include=FALSE}
+ensembl <- useMart("ensembl", dataset = "mmusculus_gene_ensembl")
+annoData <- toGRanges(EnsDb.Mmusculus.v79)
+
+csaw.param <- readParam(
+    dedup = F,
+    pe = "none"
+)
+
+atac.width <- 200
+atac.spacing <- 100
+atac.max.chaining <- 1200
+
+h3k4me1.fragment.length <- 250
+h3k4me1.width <- 600
+h3k4me1.spacing <- 300
+h3k4me1.max.chaining <- 1200
+
+h3k27ac.fragment.length <- 250
+h3k27ac.width <- 400
+h3k27ac.spacing <- 200
+h3k27ac.max.chaining <- 1200
+```
+ 
+# ATAC-seq
+
+## 3KO vs 4KO
+
+```{r include=FALSE}
+if(flag.primary) {
+    if(flag.primary.raw) {
+        bam <- dir(path = "/Volumes/elements/Sho/atac/3KOvs4KO/bam/!all", pattern = "*.bam$")
+        dat <- windowCounts(paste("/Volumes/elements/Sho/atac/3KOvs4KO/bam/!all", bam, sep = "/"), width = atac.width, spacing = atac.spacing, param = csaw.param, ext = NA, filter = 0)
+        save(bam, dat, file="data/atac/3KOvs4KO/dat.rda")
+    } else {
+        load("data/atac/3KOvs4KO/dat.rda")        
+    }
+
+    genotype <- c(
+        rep("3KO", 15),
+        rep("4KO", 15)
+    )
+    
+    stimulation <- rep(c(
+        rep("TNF_02", 3),
+        rep("TNF_04", 3),
+        rep("TNF_08", 3),
+        rep("TNF_24", 3),
+        rep("NT", 3)
+    ), 2)
+    
+    batch <- rep(c("rep1", "rep2", "rep3"), 10)
+    
+    colData(dat) <- DataFrame(colData(dat), genotype = genotype, stimulation = stimulation, batch = batch)
+    
+    rm(list = c("genotype", "stimulation", "batch"))
+    
+    atac_3KOvs4KO <- dat; rm(dat)
+}
+```
+
+```{r include=FALSE}
+if(flag.primary) {
+    exclude <- colData(atac_3KOvs4KO)$batch == "rep2"
+    cnt <- cpm(asDGEList(atac_3KOvs4KO), log = T)[, !exclude]
+    data.table::setattr(cnt, "dimnames", list(rownames(cnt), apply(data.frame(colData(atac_3KOvs4KO))[!exclude, c("genotype", "stimulation", "batch")], 1, paste, collapse = ".")))
+    
+    snr.rep1 <- quantile(cnt[, grepl("rep1", colnames(cnt))], probs = c(0.5, 0.8, 0.9, 0.95, 0.96, 0.97, 0.98, 0.99, 0.995, 0.999))
+    snr.rep3 <- quantile(cnt[, grepl("rep3", colnames(cnt))], probs = c(0.5, 0.8, 0.9, 0.95, 0.96, 0.97, 0.98, 0.99, 0.995, 0.999))
+    keep <- apply(cnt[, grepl("rep1", colnames(cnt))], 1, function(x) any(x > snr.rep1[10])) | apply(cnt[, grepl("rep3", colnames(cnt))], 1, function(x) any(x > snr.rep3[10]))
+    atac_3KOvs4KO.snr <- mean(snr.rep1[10] + snr.rep3[10])
+    print(sum(keep) / length(keep) * 100)
+    
+    rm(cnt)
+    
+    xxx <- atac_3KOvs4KO[keep, !exclude]; rm(atac_3KOvs4KO)
+    
+    rm(keep)
+    
+    sex <- GRanges(
+        seqnames = Rle("chrX", 3),
+        ranges = IRanges(c(50549000, 75725000, 103410000), end = c(50638000, 75763000, 103490000)),
+        strand = Rle(strand(c("*")), 3)
+    )
+    xxx <- xxx[-findOverlaps(rowRanges(xxx), sex)@from, ]; rm(sex)
+    
+    rm(exclude)
+    
+    merged <- mergeWindows(rowRanges(xxx), tol = 0, max.width = atac.max.chaining)
+    
+    grp <- paste(colData(xxx)$genotype, colData(xxx)$stimulation, sep = ".")
+    batch <- colData(xxx)$batch
+    
+    #xxx <- csaw::normOffsets(xxx)
+    #print(xxx$norm.factors) *this isn't working*
+    
+    dge <- asDGEList(xxx)
+    dge <- calcNormFactors(dge)
+    
+    lcnt <- cpm(dge, normalized.lib.sizes = T, log = T)
+    lcnt <- removeBatchEffect(lcnt, batch = batch, design = model.matrix(~ grp))
+    
+    cnt <- 2^lcnt
+    
+    colnames(lcnt) <- colnames(cnt) <- paste(grp, batch, sep = ".")
+}
+```
+
+```{r echo=FALSE, eval=FALSE}
+topByVar <- order(rowVars(cnt), decreasing = T)[1:1000]
+pca <- prcomp(t(cnt[topByVar, ]), scale. = T)
+
+ggplot(data.frame(pca$x[, c("PC1", "PC2")], batch = colData(xxx)$batch, genotype = colData(xxx)$genotype, stimulation = colData(xxx)$stimulation), aes(x = PC1, y = PC2)) +
+    geom_point(aes(size = stimulation, color = genotype, shape = batch)) +
+    labs(x = paste0("PC1 (", round(summary(pca)$importance[2, 1] * 100, 1), "%)"), y = paste0("PC2 (", round(summary(pca)$importance[2, 2] * 100, 1), "%)")) +
+    theme(axis.title=element_text(size="18")) +
+    guides(shape = guide_legend(title = "Condition"))
+
+rm(list=c("pca", "topByVar"))
+```
+
+```{r echo=FALSE}
+if(flag.primary) {
+    dsn <- model.matrix(~ 0 + grp + batch)
+    dge <- estimateDisp(dge, dsn)
+    fit <- glmQLFit(dge, dsn)
+    
+    merged.max.rel <- tapply(rowSums(cnt), merged$id, which.max)
+    merged.first <- vector(mode = "integer", length = length(merged.max.rel))
+    merged.first[1] <- 1
+    tmp.content <- merged$id[1]
+    tmp.index <- 2
+    for(i in 2:length(merged$id))
+        if(merged$id[i] != tmp.content) {
+            tmp.content <- merged$id[i]
+            merged.first[tmp.index] <- i
+            tmp.index <- tmp.index + 1
+        }
+    best <- as.vector(merged.first + merged.max.rel - 1)
+    
+    rm(list = c("tmp.content", "tmp.index", "merged.max.rel", "merged.first", "i"))
+    
+    best.cnt <- cnt[best, ]
+    best.lcnt <- lcnt[best, ]
+    best.region <- rowRanges(xxx)[best]
+    mcols(best.region)$name <- paste0("r", 1:length(merged$region))
+    best.cnt.avg <- t(apply(best.cnt, 1, function(x) tapply(x, grp, mean)))
+    best.lcnt.avg <- log2(t(apply(2 ^ best.lcnt, 1, function(x) tapply(x, grp, mean))))
+}
+```
+
+# H3K4me1
+
+## 3KOvs4KO
+
+```{r include=FALSE}
+if(flag.primary) {
+    if(flag.primary.raw) {
+        bam <- dir(path = "/Volumes/elements/Sho/h3k4me1/3KOvs4KO/bam/!all", pattern = "*.bam$")
+        dat <- windowCounts(paste("/Volumes/elements/Sho/h3k4me1/3KOvs4KO/bam/!all", bam, sep = "/"), width = h3k4me1.width, spacing = h3k4me1.spacing, param = csaw.param, ext = h3k4me1.fragment.length, filter = 0)
+        save(bam, dat, file = "data/h3k4me1/3KOvs4KO/dat.rda")
+    } else {
+        load("data/h3k4me1/3KOvs4KO/dat.rda")
+    }
+    
+    batch <- c(rep("KO-2", 10), rep("KO-4", 10))
+    genotype <- c(rep("3KO", 5), rep("4KO", 5), rep("3KO", 5), rep("4KO", 5))
+    time <- rep(c(0, 0, 2, 8, 24), 4)
+    
+    batch <- batch[-grep("Input", bam)]
+    genotype <- genotype[-grep("Input", bam)]
+    time <- time[-grep("Input", bam)]
+    dat <- dat[, -grep("Input", bam)]
+    bam <- bam[-grep("Input", bam)]
+    
+    colData(dat) <- DataFrame(colData(dat), genotype = genotype, time = time, batch = batch)
+    
+    rm(list = c("genotype", "time", "batch"))
+    
+    maxAbund <- apply(cpm(asDGEList(dat), log = T), 1, max)
+    h3k4me1_3KOvs4KO.snr <- quantile(maxAbund, probs = 0.98)
+    
+    keep <- maxAbund > h3k4me1_3KOvs4KO.snr
+    print(sum(keep) / length(keep) * 100)
+    xxx <- dat[keep, ]
+    
+    rm(list = c("keep", "dat"))
+    gc()
+    
+    nrm <- normOffsets(xxx, se.out=F)
+    print(nrm)
+    
+    merged <- mergeWindows(rowRanges(xxx), tol = 0, max.width = h3k4me1.max.chaining)
+    
+    grp <- paste(colData(xxx)$genotype, colData(xxx)$time, sep = ".")
+    
+    dge <- asDGEList(xxx, norm.factors = nrm)
+    
+    lcnt <- cpm(dge, normalized.lib.sizes = T, log = T)
+    lcnt <- removeBatchEffect(lcnt, batch = colData(xxx)$batch, design = model.matrix(~ grp))
+    colnames(lcnt) <- paste(grp, colData(xxx)$batch, sep=".")
+    
+    cnt <- 2^lcnt
+    cnt.avg <- t(apply(cnt, 1, function(x) tapply(x, grp, mean)))
+    
+    rm(lcnt)
+}
+```
+
+## Panel 3D
+
+```{r include=FALSE}
+f2c.labels <- c("3KO", "4KO")
+f2c.samples <- colData(atac_3KOvs4KO)$genotype %in% f2c.labels
+f2c.best.keep <- apply(atac_3KOvs4KO.best[["lcnt"]][, f2c.samples], 1, function(x) any(x >= log2(atac_3KOvs4KO.snr)))
+f2c.merged.keep <- atac_3KOvs4KO.dat[["merged"]]$id %in% which(f2c.best.keep)
+f2c.merged <- atac_3KOvs4KO.dat[["merged"]]; f2c.merged$id <- f2c.merged$id[f2c.merged.keep]; f2c.merged$region <- f2c.merged$region[f2c.best.keep]
+f2c.best.cnt <- atac_3KOvs4KO.best[["cnt"]][f2c.best.keep, f2c.samples]
+f2c.best.cnt.avg <- atac_3KOvs4KO.best[["cnt.avg"]][f2c.best.keep, grep(paste(f2c.labels, collapse="|"), colnames(atac_3KOvs4KO.best[["cnt.avg"]]))]
+f2c.best.region <- atac_3KOvs4KO.best[["region"]][f2c.best.keep]
+
+f2c.fit <- atac_3KOvs4KO.dat[["fit"]][f2c.merged.keep, ]
+
+f2c.ctr.ind <- makeContrasts(
+    "grp3KO.TNF_02-grp3KO.NT",
+    "grp3KO.TNF_04-grp3KO.NT",
+    "grp3KO.TNF_08-grp3KO.NT",
+    "grp3KO.TNF_24-grp3KO.NT",
+    
+    "grp4KO.TNF_02-grp4KO.NT",
+    "grp4KO.TNF_04-grp4KO.NT",
+    "grp4KO.TNF_08-grp4KO.NT",
+    "grp4KO.TNF_24-grp4KO.NT",
+    
+    levels = colnames(atac_3KOvs4KO.dat[["dsn"]])
+)
+    
+f2c.tst.ind <- glmQLFTest(f2c.fit, contrast = f2c.ctr.ind)
+
+f2c.bst.ind <- getBestTest(f2c.merged$id, f2c.tst.ind$table, by.pval=F)
+f2c.tab.ind <- combineTests(f2c.merged$id, f2c.tst.ind$table, weight=upweightSummit(f2c.merged$id, f2c.bst.ind$best))
+
+f2c.sig.ind <- f2c.tab.ind$FDR <= 0.05 & apply(f2c.bst.ind[, grep("^logFC\\.", colnames(f2c.bst.ind))], 1, function(x) any(x > 1))
+
+dir.create("results/f2c")
+
+export(f2c.best.region[f2c.sig.ind], "results/f2c/inducible.bed")
+
+f2c.ctr.dif <- makeContrasts(
+    "grp4KO.TNF_02-grp3KO.TNF_02",
+    "grp4KO.TNF_04-grp3KO.TNF_04",
+    "grp4KO.TNF_08-grp3KO.TNF_08",
+    "grp4KO.TNF_24-grp3KO.TNF_24",
+    
+    levels = colnames(atac_3KOvs4KO.dat[["dsn"]])
+)
+
+f2c.tst.dif <- glmQLFTest(f2c.fit, contrast = f2c.ctr.dif)
+
+f2c.bst.dif <- getBestTest(f2c.merged$id, f2c.tst.dif$table, by.pval=F)
+f2c.tab.dif <- combineTests(f2c.merged$id, f2c.tst.dif$table, weight=upweightSummit(f2c.merged$id, f2c.bst.dif$best))
+
+f2c.sig.dif <- f2c.tab.dif$FDR <= 0.1 & apply(f2c.bst.dif[, grep("^logFC\\.", colnames(f2c.bst.dif))], 1, function(x) any(abs(x) > 0.5))
+
+f2c.sig.eqi <- apply(f2c.tab.dif[, grep("^logFC\\.", colnames(f2c.tab.dif))], 1, function(x) all(x == 0))
+
+f2c.sig.all <- f2c.sig.ind & f2c.sig.dif
+
+export(f2c.best.region[f2c.sig.all], "results/f2c/differential.bed")
+
+f2c.hs <- t(scale(t(f2c.best.cnt.avg[f2c.sig.all, c("3KO.NT", "3KO.TNF_02", "3KO.TNF_04", "3KO.TNF_08", "3KO.TNF_24", "4KO.NT", "4KO.TNF_02", "4KO.TNF_04", "4KO.TNF_08", "4KO.TNF_24")])))
+
+f2c.up <- (f2c.hs[, "4KO.TNF_02"] + f2c.hs[, "4KO.TNF_04"] + f2c.hs[, "4KO.TNF_08"] + f2c.hs[, "4KO.TNF_24"]) - (f2c.hs[, "3KO.TNF_02"] + f2c.hs[, "3KO.TNF_04"] + f2c.hs[, "3KO.TNF_08"] + f2c.hs[, "3KO.TNF_24"]) > 0
+
+soi <- list(
+    differential.up = f2c.best.region[f2c.sig.all][f2c.up]
+)
+
+f2c.xs <- pam(f2c.hs[f2c.up, ], k = 6)
+f2c.os <- rank(tapply(apply(f2c.hs[f2c.up, 6:10], 1, which.max), f2c.xs$clustering, mean))
+mcols(soi[["differential.up"]]) <- DataFrame(mcols(soi[["differential.up"]]), cluster = f2c.os[f2c.xs$clustering])
+rm(list = c("f2c.xs", "f2c.os"))
+
+export(soi[["differential.up"]], "results/f2c/differential_up.bed")
+write_csv(data.frame(soi[["differential.up"]]), path="results/f2c/differential_up.csv")
+
+pheatmap(
+    f2c.hs[f2c.up, ][order(mcols(soi[["differential.up"]])$cluster), ],
+    border_color = NA,
+    color = c(rev(colorRampPalette(c("white", "navy", "midnightblue"), bias = 0.45)(32)), colorRampPalette(c("white", "firebrick3", "firebrick"), bias = 0.45)(32)),
+    # breaks = seq(-max(abs(h)), max(abs(h)), length.out=64),  # makes color key symmetrical
+    # cellwidth = 15,
+    # cellheight = 12,
+    width = 7,
+    height = 12,
+    scale = "none",
+    cluster_cols = F,
+    cluster_rows = F,
+    gaps_col = c(5),
+    gaps_row = cumsum(table(mcols(soi[["differential.up"]])$cluster)),
+    show_rownames = F,
+    legend = T,
+    drop_levels = T,
+    fontsize = 8,
+    filename = "results/f2c/differential_up.pdf"
+)
+
+export(f2c.best.region[f2c.sig.all][!f2c.up], "results/f2c/differential_down.bed")
+
+soi[["differential.down"]] <- f2c.best.region[f2c.sig.all][!f2c.up]
+
+pheatmap(
+    f2c.hs[!f2c.up, ],
+    border_color = NA,
+    color = c(rev(colorRampPalette(c("white", "navy", "midnightblue"), bias = 0.45)(32)), colorRampPalette(c("white", "firebrick3", "firebrick"), bias = 0.45)(32)),
+    # breaks = seq(-max(abs(h)), max(abs(h)), length.out=64),  # makes color key symmetrical
+    # cellwidth = 15,
+    # cellheight = 12,
+    width = 7,
+    height = 12,
+    scale = "none",
+    cluster_cols = F,
+    cluster_rows = T,
+    clustering_distance_rows = "euclidean",
+    clustering_method = "ward.D2",
+    gaps_col = c(5),
+    show_rownames = F,
+    legend = T,
+    drop_levels = T,
+    fontsize = 8,
+    filename = paste0("results/f2c/differential_down.pdf")
+)
+
+f2c.sig.not <- f2c.sig.ind & !f2c.sig.dif & !f2c.sig.eqi
+
+f2c.hn <- t(scale(t(f2c.best.cnt.avg[f2c.sig.not, c("3KO.NT", "3KO.TNF_02", "3KO.TNF_04", "3KO.TNF_08", "3KO.TNF_24", "4KO.NT", "4KO.TNF_02", "4KO.TNF_04", "4KO.TNF_08", "4KO.TNF_24")])))
+
+soi[["not_differential"]] <- f2c.best.region[f2c.sig.not]
+
+f2c.xn <- pam(f2c.hn, k = 6)
+f2c.on <- rank(tapply(apply(f2c.hn[, 6:10], 1, which.max), f2c.xn$clustering, mean))
+mcols(soi[["not_differential"]]) <- DataFrame(mcols(soi[["not_differential"]]), cluster = f2c.on[f2c.xn$clustering])
+rm(list = c("f2c.xn", "f2c.on"))
+
+export(soi[["not_differential"]], "results/f2c/not_differential.bed")
+write_csv(data.frame(soi[["not_differential"]]), path="results/f2c/not_differential.csv")
+
+pheatmap(
+    f2c.hn[order(mcols(soi[["not_differential"]])$cluster), ],
+    border_color = NA,
+    color = c(rev(colorRampPalette(c("white", "navy", "midnightblue"), bias = 0.45)(32)), colorRampPalette(c("white", "firebrick3", "firebrick"), bias = 0.45)(32)),
+    # breaks = seq(-max(abs(h)), max(abs(h)), length.out=64),  # makes color key symmetrical
+    # cellwidth = 15,
+    # cellheight = 12,
+    width = 7,
+    height = 12,
+    scale = "none",
+    cluster_cols = F,
+    cluster_rows = F,
+    gaps_col = c(5),
+    gaps_row = cumsum(table(mcols(soi[["not_differential"]])$cluster)),
+    show_rownames = F,
+    legend = T,
+    drop_levels = T,
+    fontsize = 8,
+    filename = "results/f2c/not_differential.pdf"
+)
+
+soi[["constitutive"]] <- f2c.best.region[!f2c.sig.ind]
+export(soi[["constitutive"]], "results/f2c/constitutive.bed")
+
+f2c.sig.ide <- f2c.sig.ind & f2c.sig.eqi
+
+f2c.hi <- t(scale(t(f2c.best.cnt.avg[f2c.sig.ide, c("3KO.NT", "3KO.TNF_02", "3KO.TNF_04", "3KO.TNF_08", "3KO.TNF_24", "4KO.NT", "4KO.TNF_02", "4KO.TNF_04", "4KO.TNF_08", "4KO.TNF_24")])))
+
+soi[["equivalent"]] <- f2c.best.region[f2c.sig.ide]
+
+f2c.xi <- pam(f2c.hi, k = 6)
+f2c.oi <- rank(tapply(apply(f2c.hi[, 6:10], 1, which.max), f2c.xi$clustering, mean))
+mcols(soi[["equivalent"]]) <- DataFrame(mcols(soi[["equivalent"]]), cluster = f2c.oi[f2c.xi$clustering])
+rm(list = c("f2c.xi", "f2c.oi"))
+
+export(soi[["equivalent"]], "results/f2c/equivalent.bed")
+write_csv(data.frame(soi[["equivalent"]]), path="results/f2c/equivalent.csv")
+
+pheatmap(
+    f2c.hn[order(mcols(soi[["equivalent"]])$cluster), ],
+    border_color = NA,
+    color = c(rev(colorRampPalette(c("white", "navy", "midnightblue"), bias = 0.45)(32)), colorRampPalette(c("white", "firebrick3", "firebrick"), bias = 0.45)(32)),
+    # breaks = seq(-max(abs(h)), max(abs(h)), length.out=64),  # makes color key symmetrical
+    # cellwidth = 15,
+    # cellheight = 12,
+    width = 7,
+    height = 12,
+    scale = "none",
+    cluster_cols = F,
+    cluster_rows = F,
+    gaps_col = c(5),
+    gaps_row = cumsum(table(mcols(soi[["equivalent"]])$cluster)),
+    show_rownames = F,
+    legend = T,
+    drop_levels = T,
+    fontsize = 8,
+    filename = "results/f2c/equivalent.pdf"
+)
+
+```
+
+## Fig 3H 
+
+```{r include=FALSE}
+if(flag.primary & flag.primary.raw) {
+    h3k4me1_soi <- vector(mode = "list", length = length(soi))
+    names(h3k4me1_soi) <- names(soi)
+    
+    for(i in 1:length(soi)) {
+        p <- soi[[i]]
+        start(p) <- start(p) - 200
+        end(p) <- end(p) + 200
+        h3k4me1_soi[[i]] <- regionCounts(h3k4me1_3KOvs4KO$bam.files, regions = p, ext = h3k4me1.fragment.length, param = csaw.param)
+    }
+    
+    h3k4me1_soi.dat <- vector(mode = "list", length = length(soi))
+    names(h3k4me1_soi.dat) <- names(soi)
+    
+    for(i in 1:length(h3k4me1_soi)) {
+        h3k4me1_soi.dat[[i]] <- list(
+            dge = asDGEList(h3k4me1_soi[[i]], norm.factors = h3k4me1_3KOvs4KO.dat$dge$samples$norm.factors)
+        )
+        rownames(h3k4me1_soi.dat[[i]]$dge) <- rowData(h3k4me1_soi[[i]])$name
+        h3k4me1_soi.dat[[i]][["cnt"]] <- cpm(h3k4me1_soi.dat[[i]][["dge"]], normalized.lib.sizes = T, log = F)
+        colnames(h3k4me1_soi.dat[[i]][["cnt"]]) <- paste(colData(h3k4me1_3KOvs4KO)$genotype, colData(h3k4me1_3KOvs4KO)$time, colData(h3k4me1_3KOvs4KO)$batch, sep=".")
+        h3k4me1_soi.dat[[i]][["cnt.avg"]] <- t(apply(h3k4me1_soi.dat[[i]][["cnt"]], 1, function(x) tapply(x, paste(colData(h3k4me1_3KOvs4KO)$genotype, colData(h3k4me1_3KOvs4KO)$time, sep = "."), mean)))
+    }
+    
+    save(h3k4me1_soi, h3k4me1_soi.dat, file = "data/h3k4me1/3KOvs4KO/soi.rda")
+} else {
+    load("data/h3k4me1/3KOvs4KO/soi.rda")
+}
+```
+
+```{bash eval=FALSE}
+conda activate bioconda3
+
+ls -1 results/f2c/*.bed | parallel -j1 'annotatePeaks.pl {} mm10 -size given -mask -annStats {.}.annStats.txt'
+```
+
+```{r include=FALSE}
+dir.create("results/f2f")
+
+pheatmap(
+    t(scale(t(h3k4me1_soi.dat[["differential.up"]][["cnt.avg"]][, c("3KO.0", "3KO.2", "3KO.8", "3KO.24", "4KO.0", "4KO.2", "4KO.8", "4KO.24")])))[order(mcols(soi[["differential.up"]])$cluster), ],
+    border_color = NA,
+    color = c(rev(colorRampPalette(c("white", "navy", "midnightblue"), bias = 0.45)(32)), colorRampPalette(c("white", "firebrick3", "firebrick"), bias = 0.45)(32)),
+    # breaks = seq(-max(abs(h)), max(abs(h)), length.out=64),  # makes color key symmetrical
+    # cellwidth = 15,
+    # cellheight = 12,
+    width = 7,
+    height = 12,
+    scale = "none",  # post-clustering
+    cluster_cols = F,
+    cluster_rows = F,
+    gaps_col = c(4),
+    gaps_row = cumsum(table(mcols(soi[["differential.up"]])$cluster)),
+    show_rownames = F,
+    legend = T,
+    drop_levels = T,
+    fontsize = 8,
+    filename = paste0("results/f2f/differential_up.pdf")
+)
+```
+
+# Enhancers - define
+
+```{r include=FALSE}
+if(flag.primary) {
+    for(i in 1:length(soi)) {
+        seqlevelsStyle(soi[[i]]) <- seqlevelsStyle(annoData)
+        soi[[i]] <- annotatePeakInBatch(soi[[i]], AnnotationData = annoData, PeakLocForDistance = "middle", FeatureLocForDistance = "TSS", select = "first")
+        martData <- getBM(attributes=c("ensembl_gene_id", "external_gene_name"), filters="ensembl_gene_id", values=mcols(soi[[i]])$feature, mart=ensembl)
+        mcols(soi[[i]])$geneSymbol <- martData$external_gene_name[match(mcols(soi[[i]])$feature, martData$ensembl_gene_id)]
+        rm(martData)
+    }
+    
+    arbitrary.cutoff <- 1.8  # 2 batches of H3K4me1 3KO vs 4KO have similar SNR
+    
+    for(i in 1:length(soi)) {
+        mcols(soi[[i]])$minSignalPass <- apply(cpm(asDGEList(h3k4me1_soi[[i]]), log = T), 1, max) > arbitrary.cutoff
+        mcols(soi[[i]])$TSSdistPass <- sign(mcols(soi[[i]])$distancetoFeature) * mcols(soi[[i]])$shortestDistance < -2500 | sign(mcols(soi[[i]])$distancetoFeature) * mcols(soi[[i]])$shortestDistance > 500
+    }
+    
+    rm(arbitrary.cutoff)
+    
+    dir.create("data/enhancers")
+    
+    saveRDS(soi, file = "data/enhancers/soi.rds")
+} else {
+    soi <- readRDS("data/enhancers/soi.rds")
+}
+
+dir.create("results/enhancers")
+
+enhancers <- vector(mode = "list", length = length(soi))
+names(enhancers) <- names(soi)
+
+for(i in 1:length(enhancers)) {
+    enhancers[[i]] <- list()
+    
+    keep <- mcols(soi[[i]])$minSignalPass & mcols(soi[[i]])$TSSdistPass
+    
+    enhancers[[i]][["peaks"]] <- soi[[i]][keep]
+    export(enhancers[[i]][["peaks"]], paste0("results/enhancers/peaks.", names(soi)[i], ".bed"))
+    
+    enhancers[[i]][["h3k4me1"]] <- list()
+    enhancers[[i]][["h3k4me1"]][["obj"]] <- h3k4me1_soi[[i]][keep]
+    enhancers[[i]][["h3k4me1"]][["dge"]] <- h3k4me1_soi.dat[[i]]$dge[keep, ]
+    enhancers[[i]][["h3k4me1"]][["cnt.avg"]] <- h3k4me1_soi.dat[[i]]$cnt.avg[keep, ]
+    
+    keep <- mcols(atac_3KOvs4KO.best[[2]])$name %in% mcols(soi[[i]])$name[mcols(soi[[i]])$minSignalPass & mcols(soi[[i]])$TSSdistPass]
+    
+    enhancers[[i]][["atac"]] <- list()
+    enhancers[[i]][["atac"]][["cnt.avg"]] <- atac_3KOvs4KO.best$cnt.avg[keep, ]
+}
+
+rm(list = c(grep("^f2c\\.", ls(), value = T), "keep"))
+```
+
+```{r include=FALSE}
+pheatmap(
+    t(scale(t(enhancers[["differential.up"]][["atac"]][["cnt.avg"]][, c("3KO.NT", "3KO.TNF_02", "3KO.TNF_04", "3KO.TNF_08", "3KO.TNF_24", "4KO.NT", "4KO.TNF_02", "4KO.TNF_04", "4KO.TNF_08", "4KO.TNF_24")])))[order(mcols(enhancers[["differential.up"]][["peaks"]])$cluster), ],
+    border_color = NA,
+    color = c(rev(colorRampPalette(c("white", "navy", "midnightblue"), bias = 0.45)(32)), colorRampPalette(c("white", "firebrick3", "firebrick"), bias = 0.45)(32)),
+    # breaks = seq(-max(abs(h)), max(abs(h)), length.out=64),  # makes color key symmetrical
+    # cellwidth = 15,
+    # cellheight = 12,
+    width = 7,
+    height = 12,
+    scale = "none",  # post-clustering
+    cluster_cols = F,
+    cluster_rows = F,
+    gaps_col = c(5),
+    gaps_row = cumsum(table(mcols(enhancers[["differential.up"]][["peaks"]])$cluster)),
+    show_rownames = F,
+    legend = T,
+    drop_levels = T,
+    fontsize = 8,
+    filename = paste0("results/enhancers/differential_up.atac.pdf")
+)
+
+pheatmap(
+    t(scale(t(enhancers[["differential.up"]][["h3k4me1"]][["cnt.avg"]][, c("3KO.0", "3KO.2", "3KO.8", "3KO.24", "4KO.0", "4KO.2", "4KO.8", "4KO.24")])))[order(mcols(enhancers[["differential.up"]][["peaks"]])$cluster), ],
+    border_color = NA,
+    color = c(rev(colorRampPalette(c("white", "navy", "midnightblue"), bias = 0.45)(32)), colorRampPalette(c("white", "firebrick3", "firebrick"), bias = 0.45)(32)),
+    # breaks = seq(-max(abs(h)), max(abs(h)), length.out=64),  # makes color key symmetrical
+    # cellwidth = 15,
+    # cellheight = 12,
+    width = 7,
+    height = 12,
+    scale = "none",  # post-clustering
+    cluster_cols = F,
+    cluster_rows = F,
+    gaps_col = c(4),
+    gaps_row = cumsum(table(mcols(enhancers[["differential.up"]][["peaks"]])$cluster)),
+    show_rownames = F,
+    legend = T,
+    drop_levels = T,
+    fontsize = 8,
+    filename = paste0("results/enhancers/differential_up.h3k4me1.pdf")
+)
+```
+
+Conservation
+
+```{bash eval=FALSE}
+source activate bioconda3
+
+bedtools makewindows -w 200 -s 100 -g /Volumes/elements/Sho/public/mm10.autosomes.chrom.sizes >results/enhancers/mm10.autosomes.chrom.sizes_windows.w200.s100.bed
+
+ls -1 results/enhancers/mm10.autosomes.chrom.sizes_windows.w200.s100.resampled50000.bed results/enhancers/*.bed | parallel -j1 'computeMatrix scale-regions --regionsFileName {} --scoreFileName /Volumes/elements/Sho/public/mm10.60way.phastCons.bw --outFileName {.}_mm10.60way.phastCons.gz --outFileNameMatrix {.}_mm10.60way.phastCons.tab -m 200 -bs 200 --sortRegions keep --averageTypeBins mean --missingDataAsZero'
+```
+
+```{r include=FALSE, eval=FALSE}
+cons <- data.frame(score = vector(mode = "numeric"), sample = vector(mode = "character"), stringsAsFactors = F)
+
+for(x in list.files(path = "results/enhancers", pattern = "mm10.60way.phastCons.tab"))
+    cons <- cons %>% add_row(score = read_tsv(file.path("results", "enhancers", x), skip = 3, col_names = F)$X1, sample = sub("_mm10.60way.phastCons.tab", "", x))
+
+ggplot(cons, aes(y = y)) + geom_density(aes(x = score, y = ..scaled.., color = sample)) + theme_bw() + labs(x = "phastCons 60-way score", y = "Normalized density")
+ggsave(file="results/enhancers/conservation.pdf")
+```
+
+Motifs
+
+```{bash eval=FALSE}
+source activate bioconda3
+
+mkdir -p results/enhancers/motifs/diffUpvsInducible; cd results/enhancers/motifs/diffUpvsInducible; findMotifsGenome.pl ../../peaks.differential.up.bed mm10 . -mask -h -size given -nomotif -bg <(cat ../../peaks.*differential*bed); cd ../../../..
+
+mkdir -p results/enhancers/motifs/diffUpvsAll; cd results/enhancers/motifs/diffUpvsAll; findMotifsGenome.pl ../../peaks.differential.up.bed mm10 . -mask -h -size given -nomotif -bg <(cat ../../peaks*.bed); cd ../../../..
+
+mkdir -p results/enhancers/motifs/nonDiffvsAll; cd results/enhancers/motifs/nonDiffvsAll; findMotifsGenome.pl ../../peaks.not_differential.bed mm10 . -mask -h -size given -nomotif -bg <(cat ../../peaks*.bed); cd ../../../..
+```
+ 
+IkBaMM ATAC data
+
+```{r include=FALSE}
+if(flag.primary & flag.primary.raw) {
+    bam <- dir(path = "/Volumes/elements/Sho/atac/IkBaMM/bam/!all", pattern = "*.bam$")
+    
+    for(i in 1:length(enhancers)) {
+        enhancers[[i]][["ikbamm.atac"]] <- list()
+        enhancers[[i]][["ikbamm.atac"]][["obj"]] <- regionCounts(paste("/Volumes/elements/Sho/atac/IkBaMM/bam/!all", bam, sep = "/"), regions = enhancers[[i]][["peaks"]], ext = NA, param = csaw.param)
+    }
+    
+    for(i in 1:length(enhancers)) {
+        colData(enhancers[[i]][["ikbamm.atac"]][["obj"]]) <- DataFrame(colData(enhancers[[1]][["ikbamm.atac"]][["obj"]]), genotype = c(rep("MM", 5), rep("WT", 5), rep("MM", 4), rep("WT", 4), rep("MM", 4), rep("WT", 4)), time = c(rep(c("00", "02", "04", "08", "24"), 2), rep(c("00", "02", "04", "08"), 4)), batch = c(rep("b1", 10), rep("b2", 8), rep("b3", 8)))
+        enhancers[[i]][["ikbamm.atac"]][["dge"]] <- asDGEList(enhancers[[i]][["ikbamm.atac"]][["obj"]])
+        enhancers[[i]][["ikbamm.atac"]][["cnt"]] <- cpm(enhancers[[i]][["ikbamm.atac"]][["dge"]], log = F)
+        colnames(enhancers[[i]][["ikbamm.atac"]][["cnt"]]) <- paste(colData(enhancers[[i]][["ikbamm.atac"]][["obj"]])$genotype, colData(enhancers[[i]][["ikbamm.atac"]][["obj"]])$time, colData(enhancers[[i]][["ikbamm.atac"]][["obj"]])$batch, sep=".")
+        enhancers[[i]][["ikbamm.atac"]][["cnt.avg"]] <- t(apply(enhancers[[i]][["ikbamm.atac"]][["cnt"]], 1, function(x) tapply(x, paste(colData(enhancers[[i]][["ikbamm.atac"]][["obj"]])$genotype, colData(enhancers[[i]][["ikbamm.atac"]][["obj"]])$time, sep = "."), mean)))
+    }
+    
+    rm(list = c("bam"))
+}
+```
+ 
+
+IkBaMM ATAC plots
+
+```{r include=FALSE}
+pheatmap(
+    t(scale(t(enhancers$differential.up$ikbamm.atac$cnt.avg[, c("WT.00", "WT.04", "WT.08", "WT.24", "MM.00", "MM.02", "MM.04", "MM.08")])))[order(mcols(enhancers$differential.up$peaks)$cluster), ],
+    border_color = NA,
+    color = c(rev(colorRampPalette(c("white", "navy", "midnightblue"), bias = 0.45)(32)), colorRampPalette(c("white", "firebrick3", "firebrick"), bias = 0.45)(32)),
+    # breaks = seq(-max(abs(h)), max(abs(h)), length.out=64),  # makes color key symmetrical
+    # cellwidth = 15,
+    # cellheight = 12,
+    width = 7,
+    height = 12,
+    scale = "none",  # post-clustering
+    cluster_cols = F,
+    cluster_rows = F,
+    gaps_col = c(4),
+    gaps_row = cumsum(table(mcols(enhancers$differential.up$peaks)$cluster)),
+    show_rownames = F,
+    legend = T,
+    drop_levels = T,
+    fontsize = 8,
+    filename = paste0("results/enhancers/differential_up.ikbamm_atac.pdf")
+)
+
+pheatmap(
+    t(scale(t(enhancers$differential.up$ikbamm.atac$cnt)))[order(mcols(enhancers$differential.up$peaks)$cluster), ],
+    border_color = NA,
+    color = c(rev(colorRampPalette(c("white", "navy", "midnightblue"), bias = 0.45)(32)), colorRampPalette(c("white", "firebrick3", "firebrick"), bias = 0.45)(32)),
+    # breaks = seq(-max(abs(h)), max(abs(h)), length.out=64),  # makes color key symmetrical
+    # cellwidth = 15,
+    # cellheight = 12,
+    width = 7,
+    height = 12,
+    scale = "none",  # post-clustering
+    cluster_cols = F,
+    cluster_rows = F,
+    gaps_row = cumsum(table(mcols(enhancers$differential.up$peaks)$cluster)),
+    show_rownames = F,
+    legend = T,
+    drop_levels = T,
+    fontsize = 8,
+    filename = paste0("results/enhancers/differential_up.ikbamm_atac.single_samples.pdf")
+)
+
+pdf("results/enhancers/differential_up.ikbamm_atac.boxplot.pdf")
+t(scale(t(enhancers$differential.up$ikbamm.atac$cnt))) %>% boxplot(las = 2)
+dev.off()
+```
+ 

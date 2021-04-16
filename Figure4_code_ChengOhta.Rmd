@@ -1,0 +1,828 @@
+---
+title: "Code for Figure 4"
+output: html_document
+---
+```{r setup, include=FALSE}
+library(edgeR)
+library(ggplot2)
+library(pheatmap)
+library(matrixStats)
+library(forcats)
+library(RColorBrewer)
+library(stats)
+library(biomaRt)
+library(Vennerable)
+library(reshape2)
+library("factoextra")
+library("cluster")
+library("tidyverse")
+library("gridExtra")
+library(clipr)
+library(ChIPpeakAnno) 
+```
+
+Bring in counts from Control (3KO) vs IkBa KO (4KO) H3K4me1 ChIP-seq (two replicates)
+```{r}
+counts <- read.table("/Users/qjcheng/Documents/Work/Data/NFkB Dynamics Epigenetics/GEO submission/CtrlvKO_H3K4me1-ChIP_counts.txt", check.names = F)
+genotype <- rep(c("3KO", "4KO"), each = 4)
+genotype <- c(genotype, genotype)
+replicate <- rep(c("R2", "R4"), each = 8) 
+timepoint <- rep(c("0h", "2h", "8h", "24h"), 4)
+```
+
+Create a table of counts normalized to cpm and width
+```{r}
+barplot(colSums(counts[5:ncol(counts)]), las = 2) 
+cpm <- round(as.data.frame(cpm(counts[,5:20])),3)
+ggplot(counts, aes(x=log10(counts$width))) + geom_density() 
+cpm.width <- round(median(counts$width)*(cpm/counts$width),3)
+
+#save(cpm, file = "cpm.Rdata")
+#save(cpm.width, file = "cpm.width.Rdata")
+```
+
+Set up EdgeR for differential peak analysis
+```{r}
+y <- DGEList(counts=counts[,5:20], genes = counts[,1:4], group=paste(genotype, timepoint, sep = "."))
+y <- calcNormFactors(y)
+y$samples 
+design <- model.matrix(~0+group, data=y$samples)
+colnames(design) <- levels(y$samples$group)
+y <- estimateDisp(y, design, robust=TRUE)
+sqrt(y$common.dispersion)
+plotBCV(y)
+fit <- glmQLFit(y,design)
+```
+
+Differential peak analysis
+```{r}
+# Use edgeR to identify inducible peaks in any condition
+Compare_3KO.24h <- glmQLFTest(fit, contrast = c(-1,1,0,0,0,0,0,0))
+DiffPeaks_3KO.24h <- decideTestsDGE(Compare_3KO.24h, adjust.method = "fdr", p.value = 0.05)
+summary(DiffPeaks_3KO.24h == 1)
+
+Compare_3KO.2h <- glmQLFTest(fit, contrast = c(-1,0,1,0,0,0,0,0))
+DiffPeaks_3KO.2h <- decideTestsDGE(Compare_3KO.2h, adjust.method = "fdr", p.value = 0.05)
+summary(DiffPeaks_3KO.2h == 1)
+
+Compare_3KO.8h <- glmQLFTest(fit, contrast = c(-1,0,0,1,0,0,0,0))
+DiffPeaks_3KO.8h <- decideTestsDGE(Compare_3KO.8h, adjust.method = "fdr", p.value = 0.05)
+summary(DiffPeaks_3KO.8h == 1)
+
+Compare_4KO.24h <- glmQLFTest(fit, contrast = c(0,0,0,0,-1,1,0,0))
+DiffPeaks_4KO.24h <- decideTestsDGE(Compare_4KO.24h, adjust.method = "fdr", p.value = 0.05)
+summary(DiffPeaks_4KO.24h == 1)
+
+Compare_4KO.2h <- glmQLFTest(fit, contrast = c(0,0,0,0,-1,0,1,0))
+DiffPeaks_4KO.2h <- decideTestsDGE(Compare_4KO.2h, adjust.method = "fdr", p.value = 0.05)
+summary(DiffPeaks_4KO.2h == 1)
+
+Compare_4KO.8h <- glmQLFTest(fit, contrast = c(0,0,0,0,-1,0,0,1))
+DiffPeaks_4KO.8h <- decideTestsDGE(Compare_4KO.8h, adjust.method = "fdr", p.value = 0.05)
+summary(DiffPeaks_4KO.8h == 1)
+```
+ 
+Get union of these inducible peaks
+```{r}
+keep <- DiffPeaks_3KO.24h==1 | DiffPeaks_3KO.2h==1 | DiffPeaks_3KO.8h==1 | DiffPeaks_4KO.24h==1 | DiffPeaks_4KO.2h==1 | DiffPeaks_4KO.8h==1
+summary(keep) #5278 peaks
+
+cpm.induced <- cpm[keep,]
+```
+
+PCA and heatmap of all inducible peaks
+```{r}
+pca <- prcomp(t(log2(cpm.induced+1)), scale = TRUE, center = T)
+screeplot(pca)
+
+df_out <- as.data.frame(pca$x)
+df_out$sample <- colnames(cpm.induced)  
+df_out$timepoint <- c(0,2,8,24)  
+ 
+percentage <- round(pca$sdev^2 / sum(pca$sdev^2) * 100, 2)
+percentage <- paste( colnames(pca$x), "(", paste( as.character(percentage), "%", ")", sep="") )
+
+ggplot(df_out, aes(x=PC1,y=PC2)) + geom_point(aes(shape = replicate, color = genotype, size = timepoint)) + xlab(percentage[1]) + ylab(percentage[2]) + scale_size_continuous(labels = c(0, 2, 8, 24), breaks = c(0,2,6,12))
+
+pheatmap(cpm.induced, scale = "row", show_rownames = F, cluster_cols = F, gaps_col = c(4,8,12), colorRampPalette(c("blue3", "white", "red3"))(100))
+```
+ 
+Recreate negative binomial model using the 5278 induced peaks, and then run glmQLFTest
+```{r}
+z <- y[keep,] 
+# keep TMM normalization from the entire dataset
+design <- model.matrix(~0+group, data=z$samples)
+colnames(design) <- levels(z$samples$group) 
+z <- estimateDisp(z, design, robust=TRUE)
+sqrt(z$common.dispersion)
+plotBCV(z)
+
+fit <- glmQLFit(z,design)
+fdr <- 0.05
+
+Compare.0h <- glmQLFTest(fit, contrast = c(-1,0,0,0,1,0,0,0))
+DiffPeaks.0h <- decideTestsDGE(Compare.0h, adjust.method = "fdr", p.value = fdr)
+summary(DiffPeaks.0h == 1)
+
+Compare.8h <- glmQLFTest(fit, contrast = c(0,0,0,-1,0,0,0,1))
+DiffPeaks.8h <- decideTestsDGE(Compare.8h, adjust.method = "fdr", p.value = fdr)
+summary(DiffPeaks.8h == 1)
+
+Compare.24h <- glmQLFTest(fit, contrast = c(0,-1,0,0,0,1,0,0))
+DiffPeaks.24h <- decideTestsDGE(Compare.24h, adjust.method = "fdr", p.value = fdr)
+summary(DiffPeaks.24h == 1)
+
+Compare.2h <- glmQLFTest(fit, contrast = c(0,0,-1,0,0,0,1,0))
+DiffPeaks.2h <- decideTestsDGE(Compare.2h, adjust.method = "fdr", p.value = fdr)
+summary(DiffPeaks.2h == 1)
+
+# Identify peaks that are differentially induced AND not differential at baseline
+keep2 <- (DiffPeaks.8h == 1 | DiffPeaks.24h == 1 | DiffPeaks.2h == 1) & !DiffPeaks.0h == 1
+summary(keep2)
+cpm.differential <- cpm.induced[keep2,] #2081 peaks
+```
+ 
+#Fig 4A: Make heat map of averaged counts of these 2081 inducible-differential peaks 
+```{r} 
+cpm.avg <- data.frame(row.names = rownames(cpm),
+                        "3KO.0h" = (cpm[,1] + cpm[,9])/2,
+                        "3KO.2h" = (cpm[,2] + cpm[,10])/2,
+                        "3KO.8h" = (cpm[,3] + cpm[,11])/2,
+                        "3KO.24h" = (cpm[,4] + cpm[,12])/2,
+                        "4KO.0h" = (cpm[,5] + cpm[,13])/2,
+                        "4KO.2h" = (cpm[,6] + cpm[,14])/2,
+                        "4KO.8h" = (cpm[,7] + cpm[,15])/2,
+                        "4KO.24h" = (cpm[,8] + cpm[,16])/2) 
+colnames(cpm.avg) <- substr(colnames(cpm.avg), 2, nchar(colnames(cpm.avg))) 
+ChIP.ind.diff <- cpm.avg[rownames(cpm.avg) %in% rownames(cpm.differential),]
+
+set.seed(123)
+scaled <- t(scale(t(ChIP.ind.diff)))
+k <- kmeans(scaled, 3, nstart = 25)
+num <- cumsum(table(k$cluster))
+
+#pheatmap(ChIP.ind.diff[order(k$cluster),], scale = "row", show_rownames = F, cluster_cols = F, cluster_rows = F, gaps_row = num, gaps_col = 4, colorRampPalette(c("blue3", "white", "red3"))(64))
+
+pheatmap(ChIP.ind.diff[order(k$cluster),], scale = "row", show_rownames = F, cluster_cols = F, cluster_rows = F, gaps_row = num, gaps_col = 4, color = c(rev(colorRampPalette(c("white", "navy", "midnightblue"), bias = 0.45)(32)), colorRampPalette(c("white", "firebrick3", "firebrick"), bias = 0.45)(32)))
+
+#pheatmap(log2(ChIP.ind.diff[order(k$cluster),] +1), scale = "none", show_rownames = F, cluster_cols = F, cluster_rows = F, gaps_row = num, gaps_col = 4, colorRampPalette(c("white", "midnightblue"))(100), border_color = NA)
+```
+
+Write bed files and save ChIP.ind.diff
+```{r, include=FALSE}
+#write_delim(counts[,1:3], "ChIP_allpeaks.bed", delim = '\t', col_names = F)
+#write_delim(counts[!(rownames(counts) %in% rownames(cpm.induced)),1:3], "ChIP_constutive.bed", delim = '\t')
+#write_delim(counts[rownames(cpm.induced),1:3], "ChIP_induced.bed", delim = '\t')
+#write_delim(counts[rownames(ChIP.ind.diff),1:3], "ChIP_ind_diff.bed", delim = '\t', col_names = F)
+
+#save(ChIP.ind.diff, file = "ChIP.ind.diff_2081peaks.rdata")
+```
+
+# Relate to WT NFkB enhancers in Fig 1D
+sort -k1,1 -k2,2n .bed > sorted.bed 
+bedtools intersect -a ChIP.sorted.bed -b WTClustB.sorted.bed -wa> WT.KO.overlap.bed
+bedtools intersect -a WT.KO.overlap.bed -b ~/bin/NFkBmotifs_mm10.bed -u > WT.KO.overlap.filtered.bed 
+```{r}
+WT.bed <- read.delim("/Users/qjcheng/Documents/Work/Data/NFkB Dynamics Epigenetics/WT-stimulus-specific-enhancers/NFkBclust-filtered.bed", header = F)
+WT.bed <- WT.bed[,1:3]
+KO.bed <- counts[rownames(ChIP.ind.diff),1:3] 
+```
+
+Calculate overlap and p.value
+```{r}
+colnames(WT.bed) <- c("seqnames", "start", "end")
+WT.GRanges <- toGRanges(WT.bed, format="BED", header=FALSE) 
+
+colnames(KO.bed) <- c("seqnames", "start", "end")
+KO.GRanges <- toGRanges(KO.bed, format="BED", header=FALSE) 
+
+overlap <- findOverlapsOfPeaks(WT.GRanges, KO.GRanges)
+# generate p-value of overlap; use totalTest = 96126, which is the total number of H3K4me1 peaks in WT (80206) and 3KO4KO (100457) merged
+makeVennDiagram(overlap, totalTest = 96126)$p.value
+overlap.bed <- overlap$overlappingPeaks$`WT.GRanges///KO.GRanges`
+overlap.bed <- overlap.bed[,8:10]
+overlap.bed$start <- overlap.bed$start - 1 #move start site by 1bp to match
+```
+
+# Analyze RNA-seq data
+
+```{r }
+x <- read.table("/Users/qjcheng/Documents/Work/Data/NFkB Dynamics Epigenetics/GEO submission/CtrlvKO_RNA_counts.txt", check.names = F)
+Condition <- factor(paste(substr(colnames(x),1,3), substr(colnames(x),5,6), sep = "."))
+r <- DGEList(genes = rownames(x), counts = x, group = Condition)
+
+# Convert to cpm to figure out threshold for low expressors
+cpm <- cpm(r$counts)
+# Look at max values
+max <- data.frame(row = c(1:nrow(cpm)), max = rowMaxs(cpm))
+## density plot of row-max 
+ggplot(max, aes(x=log2(max)))+geom_density()+geom_vline(xintercept = 2.2, color = "blue")               
+                               
+# Choose log2(cpm) = 2.2 as a threshold
+2^2.2 # i.e. ~4.6 cpm 
+
+# Require 4.6 cpm in at least 3 samples
+keep <- rowSums(cpm(r$counts)>4.6) >= 3
+unnorm <- r[keep, , keep.lib.sizes=FALSE]
+dim(unnorm)
+#10120 genes remain after imposing 3 cpm threshold for expression
+
+# Make MDS to check outliers
+plotMDS(unnorm)
+
+#write.table(rownames(unnorm), "ExpressedGenes.txt", row.names = F, quote = F, col.names = F)
+```
+
+EdgeR with GLM approach
+```{r} 
+# re-format the DGEList to include condition
+r <- calcNormFactors(r)
+design <- model.matrix(~0+group, data=r$samples)
+colnames(design) <- levels(r$samples$group)
+r <- estimateDisp(r, design, robust=TRUE)
+r$common.dispersion
+plotBCV(r)
+
+fit <- glmQLFit(r,design)
+```
+
+Differential expression
+```{r}
+# 3KO 
+Ctrl.0h <- glmQLFTest(fit, contrast = c(0,0,0,-1,1,0,0,0,0,0))
+Ctrl.0h <- decideTestsDGE(Ctrl.0h, adjust.method = "fdr", p.value = 0.05)
+
+Ctrl.1h <- glmQLFTest(fit, contrast = c(1,0,0,-1,0,0,0,0,0,0))
+Ctrl.1h <- decideTestsDGE(Ctrl.1h, adjust.method = "fdr", p.value = 0.05)
+
+Ctrl.3h <- glmQLFTest(fit, contrast = c(0,1,0,-1,0,0,0,0,0,0))
+Ctrl.3h <- decideTestsDGE(Ctrl.3h, adjust.method = "fdr", p.value = 0.05)
+
+Ctrl.8h <- glmQLFTest(fit, contrast = c(0,0,1,-1,0,0,0,0,0,0))
+Ctrl.8h <- decideTestsDGE(Ctrl.8h, adjust.method = "fdr", p.value = 0.05)
+
+summary(Ctrl.0h==1)
+Ctrl.up <- Ctrl.1h==1 | Ctrl.3h==1 | Ctrl.8h==1
+#Ctrl.up <- Ctrl.3h==1 | Ctrl.8h==1
+summary(Ctrl.up==1)
+ 
+# 4KO  
+KO.0h <- glmQLFTest(fit, contrast = c(0,0,0,0,0,0,0,0,-1,1))
+KO.0h <- decideTestsDGE(KO.0h, adjust.method = "fdr", p.value = 0.05)
+
+KO.1h <- glmQLFTest(fit, contrast = c(0,0,0,0,0,1,0,0,-1,0))
+KO.1h <- decideTestsDGE(KO.1h, adjust.method = "fdr", p.value = 0.05)
+
+KO.3h <- glmQLFTest(fit, contrast = c(0,0,0,0,0,0,1,0,-1,0))
+KO.3h <- decideTestsDGE(KO.3h, adjust.method = "fdr", p.value = 0.05)
+
+KO.8h <- glmQLFTest(fit, contrast = c(0,0,0,0,0,0,0,1,-1,0))
+KO.8h <- decideTestsDGE(KO.8h, adjust.method = "fdr", p.value = 0.05)
+
+summary(KO.0h==1)
+KO.up <- KO.1h==1 | KO.3h==1 | KO.8h==1
+#KO.up <- KO.3h==1 | KO.8h==1
+summary(KO.up==1)
+```
+
+```{r}
+# Venn diagram of these
+library(Vennerable)
+venn <- list(rownames(x[Ctrl.0h==1,]), rownames(x[Ctrl.up==1,]), rownames(x[KO.0h==1,]), rownames(x[KO.up==1,]))
+names(venn) <- c("3KO new basal", "3KO repeat TNF", "4KO new basal", "4KO repeat TNF")
+venn <- Venn(venn)
+plot(venn, show = list(Faces = F), type = "squares")
+
+# Just comparing the new basals
+venn <- list(rownames(x[Ctrl.0h==1,]),rownames(x[KO.0h==1,]))
+names(venn) <- c("3KO new basal", "4KO new basal")
+venn <- Venn(venn)
+plot(venn, show = list(Faces = F), type = "circles")
+```
+
+```{r}
+#Union of all inducible peaks as rpkm table
+induced <- Ctrl.0h==1 | Ctrl.up ==1 | KO.0h==1 | KO.up==1
+summary(induced) #1962 genes 
+rpkm <- as.data.frame(rpkm(r))
+induced <- rpkm[induced,]
+```
+
+PCA and heatmap of all induced genes
+```{r}
+pca <- prcomp(t(log2(induced+1)), center=T, scale=T)
+screeplot(pca)
+
+df_out <- as.data.frame(pca$x)
+df_out$sample <- colnames(induced)
+df_out$genotype <- substr(colnames(induced), 1, 3)
+df_out$timepoint <- c(rep(c(0, 0.24, 1, 3, 8),2), c(0,0.24,3,8,0,0.24,1,3,8))
+df_out$replicate <- substr(colnames(induced), nchar(colnames(induced))-1, nchar(colnames(induced))) 
+
+percentage <- round(pca$sdev^2 / sum(pca$sdev^2) * 100, 1)
+percentage <- paste( colnames(pca$x), "(", paste( as.character(percentage), "%", ")", sep="") )
+
+ggplot(df_out, aes(x=PC1,y=PC2, size = timepoint, shape = replicate, col = genotype)) + geom_point() + xlab(percentage[1]) + ylab(percentage[2])+ scale_size_continuous(labels = c(0,0.24,1,3,8), breaks = c(0,0.24,1,3,8), range = c(2,6))
+
+#ggplot(df_out, aes(x=PC3,y=PC4, size = timepoint, shape = replicate, col = genotype)) + geom_point() + xlab(percentage[3]) + ylab(percentage[4])+ scale_size_continuous(labels = c(0,0.24,1,3,8), breaks = c(0,0.24,1,3,8), range = c(2,6))
+
+pheatmap(log2(induced+1), scale = "row", cluster_cols = F, show_rownames = F, gaps_col = c(5,10,14), colorRampPalette(c("#4d9221", "#f7f7f7", "#c51b7d"))(100))
+```
+
+Make rpkm table of averages  
+```{r}
+# convert rpkm to log2(rpkm) so that averages are geometric mean
+rpkm.log <- log2(rpkm+1)
+
+rpkm.log.mean <- as.data.frame(cbind(
+  rowMeans(rpkm.log[,grep("3KO.NT", colnames(rpkm.log))]),
+  rowMeans(rpkm.log[,grep("3KO.wash", colnames(rpkm.log))]), 
+  rpkm.log[,grep("3KO.1h", colnames(rpkm.log))],
+  rowMeans(rpkm.log[,grep("3KO.3h", colnames(rpkm.log))]),
+  rowMeans(rpkm.log[,grep("3KO.8h", colnames(rpkm.log))]),
+  rowMeans(rpkm.log[,grep("4KO.NT", colnames(rpkm.log))]),
+  rowMeans(rpkm.log[,grep("4KO.wash", colnames(rpkm.log))]), 
+  rowMeans(rpkm.log[,grep("4KO.1h", colnames(rpkm.log))]),
+  rowMeans(rpkm.log[,grep("4KO.3h", colnames(rpkm.log))]),
+  rowMeans(rpkm.log[,grep("4KO.8h", colnames(rpkm.log))])
+  ))
+
+colnames(rpkm.log.mean) <- c("3KO.NT", "3KO.0h", "3KO.1h", "3KO.3h", "3KO.8h", "4KO.NT", "4KO.0h", "4KO.1h", "4KO.3h", "4KO.8h")
+induced.log.mean <- rpkm.log.mean[rownames(rpkm.log.mean) %in% rownames(induced),]
+```
+ 
+Set up new DGElist object of only induced genes
+```{r}
+q <- r[rownames(r) %in% rownames(induced), ] 
+# keep normalization factors from r
+design <- model.matrix(~0+group, data=q$samples)
+colnames(design) <- levels(q$samples$group)
+q <- estimateDisp(q, design, robust=TRUE)
+q$common.dispersion
+plotBCV(q)
+
+fit <- glmQLFit(q,design)
+```
+
+Identify DE genes between 4KO and 3KO. 
+(4KO.stim - 3KO.stim) at each time point
+```{r}
+B.0h <- glmQLFTest(fit, contrast = c(0,0,0,-1,0, 0,0,0,1,0))
+B.0h <- decideTestsDGE(B.0h, adjust.method = "fdr", p.value = 0.05)
+summary(B.0h==1)
+
+B.0.24h <- glmQLFTest(fit, contrast = c(0,0,0,0,-1, 0,0,0,0,1))
+B.0.24h <- decideTestsDGE(B.0.24h, adjust.method = "fdr", p.value = 0.05)
+summary(B.0.24h==1)
+
+B.1h <- glmQLFTest(fit, contrast = c(-1,0,0,0,0, 1,0,0,0,0))
+B.1h <- decideTestsDGE(B.1h, adjust.method = "fdr", p.value = 0.05)
+summary(B.1h==1)
+
+B.3h <- glmQLFTest(fit, contrast = c(0,-1,0,0,0, 0,1,0,0,0))
+B.3h <- decideTestsDGE(B.3h, adjust.method = "fdr", p.value = 0.05)
+summary(B.3h==1)
+
+B.8h <- glmQLFTest(fit, contrast = c(0,0,-1,0,0, 0,0,1,0,0))
+B.8h <- decideTestsDGE(B.8h, adjust.method = "fdr", p.value = 0.05)
+summary(B.8h==1)
+
+# Identify genes that are not different at basal but are differentially inducible
+B.basal <- rownames(q$counts[B.0h==1,])
+B.wash <- rownames(q$counts[B.0.24h==1,])
+B.TNF <- rownames(q$counts[(B.1h==1 | B.3h==1 | B.8h==1),])
+
+venn <- list(B.basal, B.wash, B.TNF)
+names(venn) <- c("Basal", "Wash", "TNF-inducible")
+venn <- Venn(venn)
+plot(venn, show = list(Faces = F), type = "circles")
+
+# 620 genes that are differentially induced between 4ko and 3ko, all UP-regulated, zero down-regulated
+# 482 genes that are differentially induced if we exclude the ones that are already different at basal
+```
+ 
+Heat map of these 482 differentially-inducible genes 
+```{r}
+B.wash <- as.data.frame(induced.log.mean[!B.0h==1 & B.0.24h==1,])
+B.TNF <- as.data.frame(induced.log.mean[!B.0h==1 & !B.0.24h==1 & (B.1h==1 | B.3h==1 | B.8h==1),])
+ 
+#pheatmap(B.wash, scale = "row", cluster_rows = F, cluster_cols = F, show_rownames = F, gaps_col = c(1,5,6), colorRampPalette(c("#4d9221", "#f7f7f7", "#c51b7d"))(100))
+
+#Cluster secondary TNF-inducible differential genes into k-means of 3
+set.seed(123)
+k <- kmeans(t(scale(t(B.TNF))), 3, nstart = 25)
+table(k$cluster)
+#num <- cumsum(table(k$cluster))
+#pheatmap(B.TNF[order(k$cluster),], scale = "row", cluster_rows = F, cluster_cols = F, show_rownames = F, gaps_col = c(1,5,6), gaps_row = num, colorRampPalette(c("#4d9221", "#f7f7f7", "#c51b7d"))(100))
+
+#Arrange clusters
+B.wash$cluster <- 1.1
+B.TNF <- B.TNF[order(k$cluster),]
+B.TNF$cluster <- c(rep(1.2, 109), rep(1.3, 176), rep(1.4, 113))
+
+induced.differential <- rbind(B.wash, B.TNF)
+num <- cumsum(table(induced.differential$cluster))
+
+pheatmap(induced.differential[1:10], scale = "row", cluster_rows = F, cluster_cols = F, show_rownames = F, gaps_col = c(1,5,6), gaps_row = num, colorRampPalette(c("#4d9221", "#f7f7f7", "#c51b7d"))(100))
+```
+
+Cluster inducible-not differential genes into k-means of 3
+```{r}
+not.diff <- induced.log.mean[!rownames(induced.log.mean) %in% rownames(induced.differential),] 
+
+# K-means clustering with k=3
+set.seed(123)
+k <- kmeans((t(scale(t(not.diff)))), 3, nstart = 25)
+num <- cumsum(table(k$cluster))
+#pheatmap(not.diff[order(k$cluster),], scale = "row", cluster_rows = F, cluster_cols = F, show_rownames = F, gaps_col = c(1,5,6), gaps_row = num, colorRampPalette(c("#4d9221", "#f7f7f7", "#c51b7d"))(100))
+```
+
+Add all induced genes together, de-ordering inducible-differential genes all into one cluster
+
+```{r} 
+induced.differential <- induced.differential[order(rownames(induced.differential)),]
+not.diff <- not.diff[order(k$cluster),]
+table(k$cluster)
+not.diff$cluster <- c(rep(2,391), rep(3,616), rep(4,473))
+induced.avg <- rbind(induced.differential, not.diff)
+num <- c(482, 482, 482+cumsum(table(k$cluster)))
+
+#pheatmap(induced.avg[1:10], cluster_rows = F, scale = "row", cluster_cols = F, show_rownames = F, gaps_col = c(1,5,6), gaps_row = num, colorRampPalette(c("#4d9221", "#f7f7f7", "#c51b7d"))(100))
+```
+
+Make bed file of TSS locations for all expressed genes and induced genes
+
+```{r}
+# Get TSS coordinates and transcript support levels from biomaRt 
+ensembl=useMart("ensembl")
+mart <- useDataset("mmusculus_gene_ensembl", ensembl)
+
+genes_Ensembl <- rownames(rpkm.log.mean)
+
+geneIDs <- getBM(attributes = c("ensembl_gene_id","external_gene_name", "transcription_start_site", "chromosome_name", "transcript_length", "transcript_tsl", "strand"), filters = "ensembl_gene_id", values = genes_Ensembl, mart=mart)
+
+# Did any of the 1962 genes not get matched?
+summary(!match(rownames(rpkm.log.mean), unique(geneIDs$ensembl_gene_id)))  
+#23 out of 10120 are no longer in Biomart database; remove these
+temp <- is.na(!match(rownames(rpkm.log.mean), unique(geneIDs$ensembl_gene_id)))
+rpkm.log.mean <- rpkm.log.mean[-which(temp),]
+
+# for every gene, keep only the transcripts that have the lowest tsl score (highest confidence)
+geneIDs$tsl <- as.numeric(substr(geneIDs$transcript_tsl,4,4))
+filtered <- as.data.frame(geneIDs %>% group_by(ensembl_gene_id) %>% top_n(-1, tsl))
+# did we leave any genes out?
+summary(!match(geneIDs$ensembl_gene_id, filtered$ensembl_gene_id))
+# yes, 196 genes left out because they don't have any tsl scores (all NA)
+# put these back
+temp <- is.na(!match(geneIDs$ensembl_gene_id, filtered$ensembl_gene_id))
+temp <- geneIDs[temp,]
+filtered <- rbind(filtered, temp)
+length(unique(filtered$ensembl_gene_id)) #adds up to 10097
+
+# now that we have filtered out the higher tsl scores, select longest isoform (semi arbitrary, but there is mass spec data that majority proteins correspond to longest isoforms). Also, after filtering for best tsl score the TSS's are now very close together for almost all genes.
+filtered <- filtered %>% group_by(ensembl_gene_id) %>% top_n(1, transcript_length)
+dim(filtered)
+# We gained four rows. Probably because these genes had two transcripts tied for longest length. Remove these rows.
+filtered <- as.data.frame(filtered[-which(duplicated(filtered$ensembl_gene_id)),]) 
+
+# Make bed file of TSS of all expressed genes
+coordinates <- data.frame(
+  chr = paste("chr",filtered$chromosome_name,sep=""), 
+  start = filtered$transcription_start_site,
+  end = filtered$transcription_start_site + 1,
+  name = filtered$ensembl_gene_id,
+  strand = filtered$strand)
+# change strand from "-1" and "1" to "-" and "+"
+coordinates[coordinates$strand == "-1",5] <- "-"
+coordinates[coordinates$strand == "1",5] <- "+"
+head(coordinates)
+
+# Get the coordinates for the subset of inducible genes
+coordinates.induced <- coordinates[coordinates$name %in% rownames(induced.avg),] 
+
+#write.table(coordinates, file = "expressedTSS.bed", quote = F, sep = "\t", row.names = F, col.names = F)
+#write.table(coordinates.induced, file = "inducedTSS_1958.bed", quote = F, sep = "\t", row.names = F, col.names = F)
+```
+
+
+# Bring in distances to nearest ATAC and ChIP peaks of interest
+sort -k1,1 -k2,2n .bed > sorted.bed 
+bedtools closest -a inducedTSS.sorted.bed -b peaks.sorted.bed -D a > TSStopeak.bed
+
+Add distances to induced.avg dataframe
+```{r}
+TSStoChIP <- read.table(file="TSStoChIP.bed", sep = "\t", stringsAsFactors = F)
+TSStoATAC <- read.table(file="TSStoATAC.bed", sep = "\t", stringsAsFactors = F)  
+TSStoWT <- read.table(file="TSStoWToverlap.bed", sep = "\t", stringsAsFactors = F)  
+
+# Add distance metrics
+induced.avg$dist.ChIP <- TSStoChIP[match(rownames(induced.avg), TSStoChIP$V4),9]
+induced.avg$log.ChIP <- log10(abs(induced.avg$dist.ChIP) + 1)
+induced.avg$dist.ATAC <- TSStoATAC[match(rownames(induced.avg), TSStoATAC$V4),12]
+ 
+# There are no ATAC peaks of interest on ChrX, so the distance metric for genes on these chromosomes is infinite... make them NA
+induced.avg[which(induced.avg$dist.ATAC==-1),14] <- NA
+induced.avg$log.ATAC <- log10(abs(induced.avg$dist.ATAC) + 1)
+
+induced.avg$dist.WToverlap <- TSStoWT[match(rownames(induced.avg), TSStoWT$V4),9]
+induced.avg$log.WToverlap <- log10(abs(induced.avg$dist.WToverlap) + 1)
+
+# Add GeneIDs
+induced.avg$geneID <- filtered[match(rownames(induced.avg), filtered$ensembl_gene_id),2]
+
+#write.csv(induced.avg, file = "logrpkm.annotated.csv")
+#save(induced.avg, file = "logrpkm.induced.Rdata")
+```
+
+# Supplemental figure: Make annotated heatmap
+```{r}
+annot <- data.frame(row.names = rownames(induced.avg), ATAC = induced.avg$log.ATAC, KO.H3K4me1 = induced.avg$log.ChIP, WT.overlap = induced.avg$log.WToverlap)
+#truncate distances
+annot <- as.data.frame(apply(annot, 2, function(x) ifelse(x > 6, 6, x)))
+annot <- as.data.frame(apply(annot, 2, function(x) ifelse(x < 3, 3, x)))
+annot_colors <- list(ATAC = c("#252525", "#969696", "white"), KO.H3K4me1 = c("#4a1486", "#dadaeb", "white"), WT.overlap = c("#084594", "#9ecae1", "white"))
+num <- cumsum(table(induced.avg$cluster))
+
+pheatmap(induced.avg[1:10], cluster_rows = F, scale = "row", cluster_cols = F, show_rownames = F, gaps_col = c(1,5,6), gaps_row = c(num[4], num[4], num[5], num[6]), colorRampPalette(c("#4d9221", "#f7f7f7", "#c51b7d"))(100), annotation_row = annot, annotation_colors = annot_colors)
+```
+
+# Fig 4E: Make violin plot of distance to nearest ChIP induced-differential peaks
+```{r}
+cumsum(table(induced.avg$cluster))
+plota <- stack(induced.avg[1:482,c(13,15)])
+plota$group <- "Differential"
+plotb <- stack(induced.avg[483:nrow(induced.avg),c(13,15)])
+plotb$group <- "Not Differential"
+plot <- rbind(plota, plotb)
+
+ggplot(plot, aes(x=ind, y=values)) + 
+  geom_violin(aes(fill = group), size = 1.5, na.rm = T, trim = T, show.legend = T ) + 
+  labs(x=NULL, y="log10 (Distance to nearest peak)") + 
+  theme_classic()
+
+ks.test(induced.avg[1:482,15], induced.avg[483:nrow(induced.avg),15]) #ATAC p-value
+ks.test(induced.avg[1:482,13], induced.avg[483:nrow(induced.avg),13]) #ChIP p-value
+```
+
+# Fig 4E: bar graph
+```{r} 
+diff <- as.data.frame(ifelse(induced.avg[1:482,c(13,15)] >4, 0, 1))
+diff[is.na(diff)] <- 0
+not <- as.data.frame(ifelse(induced.avg[483:nrow(induced.avg),c(13,15)] >4, 0, 1))
+not[is.na(not)] <- 0
+
+df <- data.frame(percent = c(colSums(diff) / nrow(diff), colSums(not) / nrow(not)),
+                 type = rep(c("ChIP", "ATAC"), 2),
+                 category = rep(c("Differential", "Not Differential"), each = 2))
+
+ggplot(df[c(1,3),], aes(x=category, y=percent, fill=category)) + 
+  geom_col(width = .7, color = "black", size = 1.5) + 
+  labs(x=NULL, y = NULL) + theme_classic() 
+
+chi.ChIP <- data.frame(row.names = c("Near", "Far"),
+                       Differential = c(sum(diff$log.ChIP==1), sum(diff$log.ChIP==0)),
+                       Not.Diff = c(sum(not$log.ChIP==1), sum(not$log.ChIP==0)))
+chisq.test(chi.ChIP)
+```
+
+
+# Fig 4D Peaks to Genes approach
+Assign peaks to nearest expressed genes with bedtools closest
+Look at expression of genes near these peaks
+```{r}
+ExpressedtoChIP <- read.table(file="expressedTSS.to.ChIP.bed", sep = "\t", stringsAsFactors = F)  
+temp <- unique(ExpressedtoChIP$V7)
+nearest <- rpkm.log.mean[temp,]
+nearest$distance <- TSStoChIP[match(rownames(nearest), ExpressedtoChIP$V7), 9]
+nearest$geneID <- filtered[match(rownames(nearest),filtered$ensembl_gene_id),2]
+
+
+set.seed(123)
+k <- kmeans(t(scale(t(nearest[,1:10]))), 3, nstart = 25)
+num <- cumsum(table(k$cluster))
+annot <- data.frame(row.names = rownames(nearest), 
+                    distance = log10(abs(nearest$distance)+1))
+annot <- as.data.frame(apply(annot, 2, function(x) ifelse(x > 6, 6, x)))
+annot <- as.data.frame(apply(annot, 2, function(x) ifelse(x < 3, 3, x)))
+
+annot_colors <- list(distance = c("#4a1486", "#dadaeb", "white"))
+
+pheatmap(nearest[order(k$cluster),1:10], scale = "row", cluster_rows = F, cluster_cols = F, show_rownames = F, gaps_col = c(1,5,6), gaps_row = num, annotation_row = annot, annotation_colors = annot_colors, colorRampPalette(c("#4d9221", "#f7f7f7", "#c51b7d"))(100))
+
+a.max <- rowMaxs(as.matrix(nearest[,2:5]))
+b.max <- rowMaxs(as.matrix(nearest[,7:10]))
+ind <- a.max - nearest$`3KO.NT` > 0 | b.max - nearest$`4KO.NT` > 0
+summary(ind)
+
+diff <- b.max > a.max
+summary(diff)
+
+c1 <- nearest[!ind,]
+c2 <- nearest[ind & !diff,]
+c3 <- nearest[ind & diff,]
+
+c1$cluster <- 1
+c2$cluster <- 2
+c3$cluster <- 3
+
+nearest <- rbind(c1,c2,c3)
+
+pheatmap(nearest[,1:10], scale = "row", cluster_rows = F, cluster_cols = F, show_rownames = F, gaps_col = c(1,5,6), gaps_row = cumsum(table(nearest$cluster)), annotation_row = annot, annotation_colors = annot_colors, colorRampPalette(c("#4d9221", "#f7f7f7", "#c51b7d"))(100))
+
+#write.csv(nearest, file = "NearestGenes_20191104.csv")
+```
+
+Induction characteristics of Cluster 3
+```{r, include = TRUE}
+#How many C3 genes are not induced at all in 3KO?
+c3.fc <- data.frame(row.names = c3$geneID,
+                    Ctrl.0h = c3$`3KO.0h` - c3$`3KO.NT`,
+                    Ctrl.1h = c3$`3KO.1h` - c3$`3KO.NT`,
+                    Ctrl.3h = c3$`3KO.3h` - c3$`3KO.NT`,
+                    Ctrl.8h = c3$`3KO.8h` - c3$`3KO.NT`,
+                    KO.0h = c3$`4KO.0h` - c3$`4KO.NT`,
+                    KO.1h = c3$`4KO.1h` - c3$`4KO.NT`,
+                    KO.3h = c3$`4KO.3h` - c3$`4KO.NT`,
+                    KO.8h = c3$`4KO.8h` - c3$`4KO.NT`)
+c3.fc$Ctrl.max <- rowMaxs(as.matrix(c3.fc[,1:4]))
+c3.fc$KO.max <- rowMaxs(as.matrix(c3.fc[,5:8]))
+ggplot(c3.fc, aes(x=Ctrl.max, y=KO.max)) + geom_point() + theme(aspect.ratio = 1) + ylim(-1,9) + xlim(-1,9) + xlab("Control log2FC") + ylab("IkBa KO log2FC") + geom_abline(slope = 1)
+summary(c3.fc$Ctrl.max<1)
+summary(c3.fc$KO.max<1)
+```
+
+RelA binding at promoters of C3 (with C1 and C2 as control)
+Make bed file of TSS locations for genes of interest and intersect with bed file of RelA peaks
+```{r}
+# Get TSS coordinates and transcript support levels from biomaRt 
+ensembl=useMart("ensembl")
+mart <- useDataset("mmusculus_gene_ensembl", ensembl)
+
+genes_Ensembl <- rownames(nearest)
+
+geneIDs <- getBM(attributes = c("ensembl_gene_id","external_gene_name", "transcription_start_site", "chromosome_name", "transcript_length", "transcript_tsl", "strand"), filters = "ensembl_gene_id", values = genes_Ensembl, mart=mart)
+
+# for every gene, keep only the transcripts that have the lowest tsl score (highest confidence)
+geneIDs$tsl <- as.numeric(substr(geneIDs$transcript_tsl,4,4))
+filtered <- as.data.frame(geneIDs %>% group_by(ensembl_gene_id) %>% top_n(-1, tsl))
+# put back genes left out because they don't have any tsl scores (all NA)
+temp <- is.na(!match(geneIDs$ensembl_gene_id, filtered$ensembl_gene_id))
+temp <- geneIDs[temp,]
+filtered <- rbind(filtered, temp) 
+
+# now that we have filtered out the higher tsl scores, select longest isoform (semi arbitrary, but there is mass spec data that majority proteins correspond to longest isoforms). Also, after filtering for best tsl score the TSS's are now very close together for almost all genes.
+filtered <- filtered %>% group_by(ensembl_gene_id) %>% top_n(1, transcript_length)
+# Remove duplicate rows where genes have >1 transcript tied for longest length.
+#filtered <- as.data.frame(filtered[-which(duplicated(filtered$ensembl_gene_id)),]) 
+
+# Make bed file of promoter (-1000 to +100 from TSS)  
+coordinates <- data.frame(
+  chr = paste("chr",filtered$chromosome_name,sep=""), 
+  start = filtered$transcription_start_site,
+  end = filtered$transcription_start_site,
+  name = filtered$external_gene_name,
+  ensembl = filtered$ensembl_gene_id,
+  strand = filtered$strand)
+
+# Expand TSS coordinates to -1000 to +100
+plusgenes <- coordinates[coordinates$strand == 1,]
+minusgenes <- coordinates[coordinates$strand == -1,]
+plusgenes$start <- plusgenes$start -1000
+plusgenes$end <- plusgenes$end + 100
+minusgenes$start <- minusgenes$start - 100
+minusgenes$end <- minusgenes$end + 1000
+coordinates <- rbind(plusgenes, minusgenes); rm(plusgenes, minusgenes)
+#write_delim(coordinates[coordinates$ensembl %in% rownames(c3),], "C3promoters.bed", delim = '\t', col_names = F)
+#write_delim(coordinates[!coordinates$ensembl %in% rownames(c3),], "C1-C2promoters.bed", delim = '\t', col_names = F)
+```
+ 
+# Fig 4F: WT data over the 224 overlapping regions
+multiBamSummary BED-file --BED WT.KO.overlap.filtered.bed -b ../../H3K4me1/20181111_StimSpecWT/05deDupped/Rep1*.bam -bl ~/bin/mm10blacklist.bed --ignoreDuplicates -e 250 --outRawCounts WTr1counts.tab -o WTr1counts.npz -p 4
+multiBamSummary BED-file --BED WT.KO.overlap.filtered.bed -b ../../H3K4me1/20190605_StimSpec_WTvTNFko/05deDupped/WT*.bam -bl ~/bin/mm10blacklist.bed --ignoreDuplicates -e 250 --outRawCounts WTr2counts.tab -o WTr2counts.npz -p 4
+
+```{r}
+wt1 <- read.table("WTr1counts.tab", header = F) 
+rownames(wt1) <- paste(wt1$V1, ":", wt1$V2, "-", wt1$V3, sep = "") 
+colnames(wt1) <- c("chr", "start", "end", "CpG", "LPS", "None", "Pam3CSK", "pIC", "TNF")
+wt1 <- wt1[order(rownames(wt1)),]
+
+wt2 <- read.table("WTr2counts.tab", header = F) 
+rownames(wt2) <- paste(wt2$V1, ":", wt2$V2, "-", wt2$V3, sep = "") 
+colnames(wt2) <- c("chr", "start", "end", "CpG", "LPS", "None", "Pam3CSK", "pIC", "TNF")
+wt2 <- wt2[order(rownames(wt2)),]
+
+wt <- cbind(wt1[,4:9], wt2[,4:9])
+```
+
+Scale WT counts for total library size
+- use samtools view -c -F 260 command to count # reads per .bam file
+- import the library sizes and apply scale factors
+```{r}
+# library sizes for WT stimulus-specificity data
+bamcounts1 <- scan("r1bamcounts.txt")
+bamcounts2 <- scan("r2bamcounts.txt")
+bamcounts <- c(bamcounts1, bamcounts2)
+
+scale.factors <- (max(bamcounts) / bamcounts)
+
+wt <- t(t(wt) * scale.factors)
+wt <- as.data.frame(wt)
+
+barplot(colSums(wt), las = 2)
+```
+
+Get geometric mean; plot heatmap of KO and WT data
+```{r} 
+wt <- log2(wt+1)
+wt <- data.frame(row.names = rownames(wt),
+                 None = (wt[,3] + wt[,9])/2,
+                 TNF = (wt[,6] + wt[,12])/2,
+                 Pam3CSK = (wt[,4] + wt[,10])/2,
+                 CpG = (wt[,1] + wt[,7])/2,
+                 LPS = (wt[,2] + wt[,8])/2,
+                 pIC = (wt[,5] + wt[,11])/2)
+
+wt.scaled <- t(scale(t(wt)))
+
+overlap.bed <- read.delim("/Users/qjcheng/Documents/Work/Data/NFkB Dynamics Epigenetics/Figures/Fig4_Code/WT.KO.overlap_20200225.bed", header = F)
+
+ChIP.ind.diff <- log2(ChIP.ind.diff[rownames(ChIP.ind.diff) %in% paste(overlap.bed$V1, ":", overlap.bed$V2, "-", overlap.bed$V3, sep = ""),]+1)
+KO.scaled <- t(scale(t(ChIP.ind.diff)))
+
+# combine into a single dataframe, scaled for each experiment separately
+wt.scaled <- wt.scaled[order(rownames(wt.scaled)),]
+KO.scaled <- KO.scaled[order(rownames(KO.scaled)),]
+scaled <- as.data.frame(cbind(KO.scaled, wt.scaled))
+
+#pheatmap(scaled[,c(1,3,5,7,9:14)], show_rownames = F, cluster_cols = F, cluster_rows = F, gaps_col = c(2,4,4), colorRampPalette(c("blue3", "white", "red3"), bias = 1.05)(64))
+
+pheatmap(scaled[,c(1,3,5,7,9:14)], show_rownames = F, cluster_cols = F, cluster_rows = F, gaps_col = c(2,4,4), color = c(rev(colorRampPalette(c("white", "navy", "midnightblue"), bias = 0.45)(32)), colorRampPalette(c("white", "firebrick3", "firebrick"), bias = 0.45)(32)))
+```
+
+# Fig 4G: heat map of differentially induced genes Cluster 1.1, plus WT gene expression
+Look only at the new basal after priming/washout, because this is where the most relevant biological question lies: how do these new enhancers change the state of the macrophage?
+```{r} 
+basal <- induced.avg[induced.avg$cluster==1.1,]  
+wt.sho <- readRDS("/Users/qjcheng/Documents/Work/Data/NFkB Dynamics Epigenetics/Roberto code/rna_WT.rds")
+wt.rna <- wt.sho[,c(grep("NT",wt.sho$samples$stimulation),grep("TNF",wt.sho$samples$stimulation))]
+wt.rna <- wt.rna[,-c(11:13,26:28)]
+wt.rna$samples
+wt.rna <- calcNormFactors(wt.rna)
+wt.rna <- as.data.frame(log2(rpkm(wt.rna)+1))
+
+plotMDS(wt.rna)   
+
+wt.rna <- as.data.frame(cbind(
+  rowMeans(wt.rna[,grep("NT.0", colnames(wt.rna))]),
+  rowMeans(wt.rna[,grep("TNF.TNF.0", colnames(wt.rna))]),
+  rowMeans(wt.rna[,grep("TNF.TNF.1", colnames(wt.rna))]),
+  rowMeans(wt.rna[,grep("TNF.TNF.3", colnames(wt.rna))]),
+  rowMeans(wt.rna[,grep("TNF.TNF.8", colnames(wt.rna))]),
+  rowMeans(wt.rna[,grep("CpG.TNF.0", colnames(wt.rna))]),
+  rowMeans(wt.rna[,grep("CpG.TNF.1", colnames(wt.rna))]),
+  rowMeans(wt.rna[,grep("CpG.TNF.3", colnames(wt.rna))]),
+  rowMeans(wt.rna[,grep("CpG.TNF.8", colnames(wt.rna))]),
+  rowMeans(wt.rna[,grep("LPS.TNF.0", colnames(wt.rna))]),
+  rowMeans(wt.rna[,grep("LPS.TNF.1", colnames(wt.rna))]),
+  rowMeans(wt.rna[,grep("LPS.TNF.3", colnames(wt.rna))]),
+  rowMeans(wt.rna[,grep("LPS.TNF.8", colnames(wt.rna))])
+  ))
+
+colnames(wt.rna) <- c("NT", "TNF.TNF.0h", "TNF.TNF.1h", "TNF.TNF.3h", "TNF.TNF.8h", "CpG.TNF.0h", "CpG.TNF.1h", "CpG.TNF.3h", "CpG.TNF.8h", "LPS.TNF.0h", "LPS.TNF.1h", "LPS.TNF.3h", "LPS.TNF.8h")
+
+wt.best <- wt.rna[rownames(wt.rna) %in% rownames(basal),c(1:5,10:13)]
+
+pheatmap(wt.best, scale = "row", cluster_rows = T, cluster_cols = F, show_rownames = F, gaps_col = c(1,5,9), colorRampPalette(c("#4d9221", "#f7f7f7", "#c51b7d"))(100), border_color = "gray80") 
+```
+
+Add 3ko/4ko data and distance to nearest overlapped WT peak
+```{r}
+scaled <- cbind(t(scale(t(basal[,c(1,2,6,7)]))), t(scale(t(wt.best[,c(1,2,6)])))) 
+num <- rowMaxs(as.matrix(scaled[,7])) - rowMaxs(as.matrix(scaled[,6])) 
+scaled <- as.data.frame(scaled[order(num, decreasing = T), ])
+scaled$geneID <- induced.avg[match(rownames(scaled), rownames(induced.avg)),18] 
+
+annot <- data.frame(row.names = rownames(induced.avg), Nearest.Peak = induced.avg$log.WToverlap) 
+#annot <- as.data.frame(apply(annot, 2, function(x) ifelse(x > 6, 6, x)))
+#annot <- as.data.frame(apply(annot, 2, function(x) ifelse(x < 3, 3, x)))
+annot_colors <- list(Nearest.Peak = c("#084594", "#9ecae1", "white"))
+
+pheatmap(scaled[,1:7], cluster_rows = F, cluster_cols = F, labels_row = scaled$geneID,  gaps_row = sum(num>0, na.rm = T), gaps_col = 4, colorRampPalette(c("#4d9221", "#f7f7f7", "#c51b7d"))(100), fontsize_row = 3, border_color = "gray80", annotation_row = annot, annotation_colors = annot_colors)  
+```
+
+Here's the heatmap including secondary TNF stimulation
+```{r}
+scaled <- cbind(t(scale(t(basal[,1:10]))), t(scale(t(wt.best)))) 
+num <- rowMaxs(as.matrix(scaled[,16:19])) - rowMaxs(as.matrix(scaled[,12:15])) 
+scaled <- scaled[order(num, decreasing = T), ]
+rownames(scaled) <- induced.avg[match(rownames(scaled), rownames(induced.avg)),18]
+
+pheatmap(scaled, cluster_rows = F, cluster_cols = F, show_rownames = T,  gaps_row = sum(num>0), gaps_col = c(1,5,6,10,10,11,15,19), colorRampPalette(c("#4d9221", "#f7f7f7", "#c51b7d"))(100), fontsize_row = 3, border_color = "gray80") 
+pheatmap(scaled[,c(1,2,6,7,11,12,16)], cluster_rows = F, cluster_cols = F, show_rownames = T,  gaps_row = sum(num>0), gaps_col = c(4), colorRampPalette(c("#4d9221", "#f7f7f7", "#c51b7d"))(100), fontsize_row = 3, border_color = "gray80") 
+#write_clip(rownames(scaled[1:sum(num>0),]))
+```
+
+```{r}
+sessionInfo()
+```
+
