@@ -1,8 +1,8 @@
 # ----------------------------------------plot a couple single cell trajectories------------------
 
 
-x.1 = readMat("F:/enhancer_dynamics/nfkb_trajectories/ikbamut_10ngTNF.mat")
-x.2 = readMat("F:/enhancer_dynamics/nfkb_trajectories/tnf_10ng.mat")
+x.1 = readMat("./Fig2/Figure2_experimental_data/ikbamut_10ngTNF.mat")
+x.2 = readMat("./Fig2/Figure2_experimental_data/tnf_10ng.mat")
 
 
 mat.1 = x.1$trajectories
@@ -40,7 +40,7 @@ ggplot(mat.2.m[grepl("^25$|^2$", mat.2.m$cellid),], aes(x = as.numeric(variable)
 tmp = rbind(mat.1.m, mat.2.m)
 ggplot(tmp[grepl("^25$", tmp$cellid),], aes(x = as.numeric(variable)*5, y = value, color = (type)))+
   geom_line(size = 3)+theme_bw(base_size = 25)+xlab("Minutes")+scale_x_continuous(breaks=c(0,60,120,180,240))
-# write.table(tmp[grepl("^25$", tmp$cellid),], "F://enhancer_stochastic/two_sample_traces.txt", quote=F,row.names = F, sep = "\t")
+# write.table(tmp[grepl("^25$", tmp$cellid),], "./Fig2/Figure2_experimental_data/two_sample_traces.txt", quote=F,row.names = F, sep = "\t")
 
 pheatmap(mat.1[,c(1:48)], cluster_cols = F, cluster_rows = F,show_rownames = F,show_colnames = F,scale = "none", main = "IkBa M/M BMDM 10ngTNF",clustering_method = "ward.D2",
          colorRampPalette(rev(brewer.pal(n = 11, name ="RdYlBu"))[2:11])(103),

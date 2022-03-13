@@ -7,7 +7,8 @@ library(R.matlab);library(DESeq2);library(edgeR);library(NucleoATACR)
 
 #NUCLEOATAC peak width analysis----
 # setwd("D://atac_bmdm/atac_PE/out_AH_08202019/NucleoATAC/03_nucposbed/")
-setwd("F://atac_bmdm_PE/NucleoATAC/03_nucposbed/")
+# setwd("F://atac_bmdm_PE/NucleoATAC/03_nucposbed/")
+setwd("./Fig4/Figure4_experimental_data/NucleoATAC_outputs")
 bed1 = read.delim("NucleoATAC_4KO-0h.nucpos.bed", header = F)
 bed2 = read.delim("NucleoATAC_4KO-4h.nucpos.bed", header = F)
 
@@ -18,8 +19,8 @@ hist(bed1$V5)
 hist(bed2$V5)
 
 #TSS centered analysis and combinations----
-motif1 = "nfkb"#"nfkb" ,"nfkb-5half", "isre", "ap1", "p53", "ascl1", "irf1", "stat1", "pu1"
-motif2 = "nfkb"#"nfkb" ,"nfkb-5half", "isre", "ap1", "p53", "ascl1", "irf1", "stat1", "pu1"
+motif1 = "nfkb-all3"#"nfkb" ,"nfkb-5half", "isre", "ap1", "p53", "ascl1", "irf1", "stat1", "pu1"
+motif2 = "nfkb-all3"#"nfkb" ,"nfkb-5half", "isre", "ap1", "p53", "ascl1", "irf1", "stat1", "pu1"
 
 hist.motif1 = read.delim(paste0("NucleoATAC_4KO-0h.nucpos.bed.", motif1,".motif.size400.nohist.txt"))
 colnames(hist.motif1)[ncol(hist.motif1)] = "distance2center"
@@ -33,7 +34,8 @@ hist1.numbers = unlist(str_split(hist1$distance2center, ","));hist1.numbers = as
 
 
 #NUCLEOATAC 4KO motif analysis----
-setwd("F://atac_bmdm_PE/NucleoATAC/03_nucposbed/")
+# setwd("F://atac_bmdm_PE/NucleoATAC/03_nucposbed/")
+setwd("./Fig4/Figure4_experimental_data/NucleoATAC_outputs")
 
 if (1){
 motif = "nfkb-all3" #"nfkb" ,"nfkb-5half", "isre", "ap1", "p53", "ascl1", "irf1", "stat1", "pu1"
@@ -83,33 +85,33 @@ ggplot(dat, aes(x = dens, fill = lines)) + geom_density(alpha = 0.3)+theme_bw(ba
 
 ################################################################################
 # plot find motif output instead----
-setwd("F://atac_bmdm_PE/NucleoATAC/03_nucposbed/")
-find1 = read.delim("NucleoATAC_4KO-0h.nucpos.bed.find.nfkb.motif.txt")
-find2 = read.delim("NucleoATAC_4KO-4h.nucpos.bed.find.nfkb.motif.txt")
-
-hist(find1$Offset, breaks = 20)
-hist(find2$Offset, breaks = 20)
-
-ggplot(data=find1, aes(find1$Offset)) + geom_histogram(bins = 25)+ggtitle("4KO-0hr")+xlab("NFkB binding - Relative to dyad")+theme_bw(base_size = 24)
-ggplot(data=find2, aes(find2$Offset)) + geom_histogram(bins = 25)+ggtitle("4KO-4hr")+xlab("NFkB binding - Relative to dyad")+theme_bw(base_size = 24)
-
-dat <- data.frame(dens = c(find1$Offset, find2$Offset)
-                  , lines = c(rep("0hr",length(find1$Offset)), rep("4hr", length(find2$Offset))))
-ggplot(dat, aes(x = dens, fill = lines)) + geom_density(alpha = 0.3)+theme_bw(base_size = 24)+ggtitle(paste0("4KO - ", motif))
-
+# setwd("F://atac_bmdm_PE/NucleoATAC/03_nucposbed/")
+# find1 = read.delim("NucleoATAC_4KO-0h.nucpos.bed.find.nfkb.motif.txt")
+# find2 = read.delim("NucleoATAC_4KO-4h.nucpos.bed.find.nfkb.motif.txt")
+# 
+# hist(find1$Offset, breaks = 20)
+# hist(find2$Offset, breaks = 20)
+# 
+# ggplot(data=find1, aes(find1$Offset)) + geom_histogram(bins = 25)+ggtitle("4KO-0hr")+xlab("NFkB binding - Relative to dyad")+theme_bw(base_size = 24)
+# ggplot(data=find2, aes(find2$Offset)) + geom_histogram(bins = 25)+ggtitle("4KO-4hr")+xlab("NFkB binding - Relative to dyad")+theme_bw(base_size = 24)
+# 
+# dat <- data.frame(dens = c(find1$Offset, find2$Offset)
+#                   , lines = c(rep("0hr",length(find1$Offset)), rep("4hr", length(find2$Offset))))
+# ggplot(dat, aes(x = dens, fill = lines)) + geom_density(alpha = 0.3)+theme_bw(base_size = 24)+ggtitle(paste0("4KO - ", motif))
+# 
 
 
 ################################################################################
 #replotting of binding motifs----
-ggplot(output_table) + geom_segment(aes(x= start_pos, y= row_pos, xend= end_pos, yend= row_pos), size=1) + 
-  # scale_y_reverse(limits = c(263, 0), expand=c(0.0001,0.0001), labels = gene_name, breaks = 1:263) +   ####expand command is done to get rid of white space
-  scale_x_continuous(limits = c(-200, 200), breaks = c(-200, -100, 0, 100, 200), 
-                     labels = c("-0.2kb", "-0.1kb", "dyad", "+0.1kb", "+0.2kb"), expand=c(0,0), position = "top") + 
-  theme_bw() + theme(axis.title.y = element_blank(), axis.ticks.y = element_blank(), 
-                     axis.title.x = element_blank(), panel.grid.major = element_blank(), 
-                     panel.grid.minor = element_blank(), axis.text.x = element_text(face = "bold", size = 10), 
-                     axis.line = element_line(color = "black"),axis.text.y = element_text(face = "bold", size = 10)) + 
-  scale_color_manual(values = c("red", "black"))
+# ggplot(output_table) + geom_segment(aes(x= start_pos, y= row_pos, xend= end_pos, yend= row_pos), size=1) + 
+#   # scale_y_reverse(limits = c(263, 0), expand=c(0.0001,0.0001), labels = gene_name, breaks = 1:263) +   ####expand command is done to get rid of white space
+#   scale_x_continuous(limits = c(-200, 200), breaks = c(-200, -100, 0, 100, 200), 
+#                      labels = c("-0.2kb", "-0.1kb", "dyad", "+0.1kb", "+0.2kb"), expand=c(0,0), position = "top") + 
+#   theme_bw() + theme(axis.title.y = element_blank(), axis.ticks.y = element_blank(), 
+#                      axis.title.x = element_blank(), panel.grid.major = element_blank(), 
+#                      panel.grid.minor = element_blank(), axis.text.x = element_text(face = "bold", size = 10), 
+#                      axis.line = element_line(color = "black"),axis.text.y = element_text(face = "bold", size = 10)) + 
+#   scale_color_manual(values = c("red", "black"))
 
 ##############################################################################
 # using matched locations----
@@ -183,83 +185,4 @@ if(1){
   
   
 }
-
-
-
-
-
-
-
-
-
-
-
-
-###############################################################################
-##3KO/4KO heatmap with binding sites----
-setwd("D://atac_bmdm/atac_PE/out_AH_08202019/01_bams_nodup/")
-peaks = read.delim("peak.file_multicov_merge_BMDM_atacPE_all_noflag.nfkb.motif.size1000.nohist.txt")
-colnames(peaks)[ncol(peaks)] = "distance2center"
-peaks$distance2center = gsub("\\s*\\([^\\)]+\\)","",as.character(peaks$distance2center))
-peaks.numbers = unlist(str_split(peaks$distance2center, ","));peaks.numbers = as.numeric(peaks.numbers[peaks.numbers!= ""])
-peaks.numbers.frame = data.frame(distace2peak = peaks.numbers)
-ggplot(data=peaks.numbers.frame, aes(peaks.numbers.frame$distace2peak)) + geom_histogram(bins = 25)+ggtitle("All peaks")+xlab("NFkB binding - Relative to peak center")
-peaks$name = paste0(peaks$Chr,":", peaks$Start,".",peaks$End)
-
-
-peaks.multicov = read.delim("multicov_merge_BMDM_atacPE_all_noflag.bed", header = F)
-rownames(peaks.multicov) = paste0("Peak_", seq(1:nrow(peaks.multicov)))
-colnames(peaks.multicov) = c("chr","start","end","3KO.24h","4KO.0h","3KO.4h", "4KO.4h")
-# write.table(cbind(peak = rownames(peaks.multicov), peaks.multicov[,c(1:3)], strand=rep(".",nrow(peaks.multicov)), peaks.multicov[c(4:7)]),
-#             "peak.file_multicov_merge_BMDM_atacPE_all_noflag.txt",
-#             sep="\t", row.names = F, col.names = T,quote = F)
-cts = peaks.multicov[,-c(1:3)]
-dds <- DESeqDataSetFromMatrix(countData = cts, colData = data.frame(name=colnames(cts), type = rep("null",4)), design = ~1)
-dds <- estimateSizeFactors(dds)
-all <- counts(dds, normalized=TRUE)
-rownames(all) = paste0("Peak_", seq(1:nrow(cts)))
-write.table(cbind(Peak = rownames(all), all), "atac_allpeaks_bmdmPE.3KO4KO_normalizedcounts.txt", sep = "\t", row.names = F, quote = F)
-peaks.multicov$name = paste0(peaks.multicov$chr,":", peaks.multicov$start,".",peaks.multicov$end)
-peaks.multicov$distance2center = as.character(peaks$distance2center[match(rownames(peaks.multicov), peaks[,1])])
-peaks.multicov$peakwidth= peaks.multicov$end - peaks.multicov$start
-
-
-vsd = vst(dds)
-mat <- assay(vsd)
-rownames(mat) = paste0("Peak_", seq(1:nrow(mat)))
-write.table(cbind(Peak = rownames(mat), mat), "atac_allpeaks_VST_bmdmPE.3KO4KO_normalizedcounts.txt", sep = "\t", row.names = F, quote = F)
-
-
-
-#old school way of gettinng induced peaks
-tmp =all
-induced <- (rowMaxs(tmp[,2:ncol(tmp)]) / (tmp[,1])) >= 4 & rowMaxs(tmp) >= 1 #& tmp[,1] < 1
-summary(induced)
-
-
-# make table of induced peaks (cpm)
-induced <- as.data.frame(tmp[induced,])
-
-# scale the cpm dataframe
-induced <- induced[order(rownames(induced)),]
-scaled <- t(scale(t(induced)))
-
-# Generate k-means clusters
-set.seed(123)
-kmcluster <- kmeans(scaled, 4, nstart = 25) 
-# order data by cluster
-ord_data <- scaled[order(kmcluster$cluster, decreasing = F), ]
-
-# make clustering annotation
-annot_r <- data.frame(row.names = rownames(scaled), cluster = factor(kmcluster$cluster))
-
-# make heatmap
-count <- 0
-for(i in 1:4){
-  count[i] <- length(kmcluster$cluster[kmcluster$cluster == i])
-}
-rowseps <- cumsum(count)
-pheatmap(ord_data[,c(1,3,2,4)], annotation_row = annot_r,cluster_rows = F, cluster_cols = F, show_rownames = F, 
-         gaps_row = rowseps, gaps_col =  c(2), colorRampPalette(c("blue", "white", "red"))(100))
-
 
