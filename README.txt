@@ -1,4 +1,4 @@
-Model and analysis code for the manuscript "Stochastic models of nucleosome dynamics reveal regulatory rules of stimulus-induced epigenome remodeling"
+Model and analysis code for the manuscript Kim, Sheu, et al.,2022, "Stochastic models of nucleosome dynamics reveal regulatory rules of stimulus-induced epigenome remodeling".
 
 
 The folder name indicates that the code related to the indicated figure is included in the folder.

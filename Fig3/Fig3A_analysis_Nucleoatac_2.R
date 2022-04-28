@@ -51,15 +51,16 @@ make_TSS_bindinglocation_table <- function(peak_bed, TSS_info, window){
 ##################################################################################################
 #NUCLEOATAC peak width analysis----
 # setwd("D://atac_bmdm/atac_PE/out_AH_08202019/NucleoATAC/03_nucposbed/")
-setwd("F://atac_bmdm_PE/NucleoATAC/03_nucposbed/")
-bed1 = read.delim("NucleoATAC_4KO-0h.nucpos.bed", header = F)
-bed2 = read.delim("NucleoATAC_4KO-4h.nucpos.bed", header = F)
-
-hist(bed1$V13)
-hist(bed2$V13)
-
-hist(bed1$V5)
-hist(bed2$V5)
+# setwd("F://atac_bmdm_PE/NucleoATAC/03_nucposbed/")
+setwd("./Fig3/")
+# bed1 = read.delim("NucleoATAC_4KO-0h.nucpos.bed", header = F)
+# bed2 = read.delim("NucleoATAC_4KO-4h.nucpos.bed", header = F)
+# 
+# hist(bed1$V13)
+# hist(bed2$V13)
+# 
+# hist(bed1$V5)
+# hist(bed2$V5)
 
 #TSS centered analysis and combinations----
 motif1 = "nfkb"#"nfkb" ,"nfkb-5half", "isre", "ap1", "p53", "ascl1", "irf1", "stat1", "pu1"
@@ -77,7 +78,8 @@ hist1.numbers = unlist(str_split(hist1$distance2center, ","));hist1.numbers = as
 
 
 #NUCLEOATAC 4KO motif analysis----
-setwd("F://atac_bmdm_PE/NucleoATAC/03_nucposbed/")
+# setwd("F://atac_bmdm_PE/NucleoATAC/03_nucposbed/")
+setwd("./Fig3/")
 
 if (1){
 motif = "nfkb-all3" #"nfkb" ,"nfkb-5half", "isre", "ap1", "p53", "ascl1", "irf1", "stat1", "pu1"
